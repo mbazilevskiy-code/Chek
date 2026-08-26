@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Чек Про — кабинет тренера</title>
+<style>
+:root{
+  color-scheme:light;
+  --page:#f4f6f3;--surface:#ffffff;--surface-2:#f8faf7;
+  --ink:#151a13;--ink-2:#535a4c;--muted:#8b917f;
+  --line:#e6e9e0;--grid:#e9ebe3;--baseline:#c9ccc0;
+  --brand:#2f7a3a;--brand-soft:#e4f0e2;
+  --s1:#2a78d6;--s3:#1baf7a;--s4:#7a5af5;
+  --ok:#0a8f2c;--ok-bg:#e2f2e2;--warn:#b57900;--warn-bg:#fbf0d6;--crit:#cf3b3b;--crit-bg:#fbe3e3;
+  --shadow:0 1px 2px rgba(20,26,19,.05),0 4px 16px rgba(20,26,19,.04);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --page:#0e120d;--surface:#171c14;--surface-2:#131810;
+  --ink:#eef1e9;--ink-2:#b6bcab;--muted:#828874;
+  --line:#28301f;--grid:#242b1c;--baseline:#3a4230;
+  --brand:#7dc47f;--brand-soft:#213019;
+  --s1:#3987e5;--s3:#1fb989;--s4:#9b82f7;
+  --ok:#3cc65a;--ok-bg:#17301a;--warn:#e2a52a;--warn-bg:#312811;--crit:#e56b6b;--crit-bg:#331a1a;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+}}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --page:#0e120d;--surface:#171c14;--surface-2:#131810;
+  --ink:#eef1e9;--ink-2:#b6bcab;--muted:#828874;
+  --line:#28301f;--grid:#242b1c;--baseline:#3a4230;
+  --brand:#7dc47f;--brand-soft:#213019;
+  --s1:#3987e5;--s3:#1fb989;--s4:#9b82f7;
+  --ok:#3cc65a;--ok-bg:#17301a;--warn:#e2a52a;--warn-bg:#312811;--crit:#e56b6b;--crit-bg:#331a1a;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.5}
+.wrap{max-width:1080px;margin:0 auto;padding:18px 22px 60px}
+header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+h1{font-size:1.25rem;margin:0}
+.sub{color:var(--muted);font-size:.85rem}
+.spacer{flex:1}
+.updated{color:var(--muted);font-size:.82rem}
+.btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:9px;
+  padding:7px 14px;font:inherit;font-size:.86rem;font-weight:600;cursor:pointer}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+.invite{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+  padding:10px 14px;margin:8px 0 16px;font-size:.9rem;color:var(--ink-2)}
+.invite code{color:var(--ink)}
+table.roster{width:100%;border-collapse:collapse;font-size:.92rem;background:var(--surface);
+  border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+.roster th{text-align:left;color:var(--muted);font-weight:600;font-size:.72rem;text-transform:uppercase;
+  letter-spacing:.05em;padding:10px 12px;border-bottom:1px solid var(--line)}
+.roster td{padding:11px 12px;border-bottom:1px solid var(--grid);vertical-align:middle}
+.roster tr.client{cursor:pointer}
+.roster tr.client:hover td{background:var(--brand-soft)}
+.roster td.num,.roster th.num{text-align:right;font-variant-numeric:tabular-nums}
+.tag{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;
+  font-size:.8rem;white-space:nowrap;margin:1px 0}
+.tag.green{background:var(--ok-bg);color:var(--ok)}
+.tag.yellow{background:var(--warn-bg);color:var(--warn)}
+.tag.red{background:var(--crit-bg);color:var(--crit)}
+.tablewrap{overflow-x:auto}
+
+/* ---- детальная карточка ---- */
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--brand);font-weight:600;
+  cursor:pointer;background:none;border:0;font:inherit;font-size:.9rem;padding:0;margin-bottom:6px}
+.chead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:2px}
+.chead h2{margin:0;font-size:1.3rem}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:999px;font-size:.8rem;font-weight:600}
+.pill.warn{background:var(--warn-bg);color:var(--warn)}.pill.crit{background:var(--crit-bg);color:var(--crit)}.pill.ok{background:var(--ok-bg);color:var(--ok)}
+.tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:14px 0 16px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:11px 13px;box-shadow:var(--shadow)}
+.tile .lbl{color:var(--ink-2);font-size:.76rem}
+.tile .val{font-size:1.4rem;font-weight:650;letter-spacing:-.02em;margin-top:3px}
+.tile .val small{font-size:.82rem;font-weight:400;color:var(--muted)}
+.tile .d{font-size:.75rem;margin-top:1px;color:var(--muted)}
+.tile.warn{border-color:var(--warn)}.tile.crit{border-color:var(--crit)}
+.tile.empty .val{color:var(--muted);font-size:1rem;font-weight:500;margin-top:6px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px 17px;box-shadow:var(--shadow);margin-bottom:14px}
+.card h3{margin:0 0 3px;font-size:.98rem}
+.card .cap{color:var(--muted);font-size:.8rem;margin:0 0 12px}
+.src{font-size:.7rem;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:6px}
+.charts{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.chart .ct{font-size:.8rem;color:var(--ink-2)}
+.chart .cv{font-size:1.02rem;font-weight:650}
+.chart svg{width:100%;height:50px;display:block;margin-top:3px}
+.nodata{color:var(--muted);font-size:.86rem;background:var(--surface-2);border:1px dashed var(--line);
+  border-radius:10px;padding:14px;text-align:center}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid2 .card{margin:0}
+.wb{display:flex;flex-direction:column;gap:9px}
+.wb-row{display:grid;grid-template-columns:96px 1fr 26px;align-items:center;gap:9px;font-size:.86rem}
+.bar{height:8px;border-radius:5px;background:var(--grid);overflow:hidden}
+.bar>i{display:block;height:100%;border-radius:5px}
+.wb-row .n{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.supp{display:flex;flex-direction:column;gap:7px}
+.supp-row{display:flex;align-items:center;gap:9px;font-size:.88rem}
+.supp-row .box{width:17px;height:17px;border-radius:5px;flex:none;display:flex;align-items:center;justify-content:center;font-size:.7rem;color:#fff}
+.box.on{background:var(--ok)}.box.off{background:transparent;border:1.5px solid var(--baseline)}
+.supp-row .tm{margin-left:auto;color:var(--muted);font-size:.78rem}
+.lab table{width:100%;border-collapse:collapse;font-size:.86rem}
+.lab th{text-align:left;color:var(--muted);font-weight:600;font-size:.7rem;text-transform:uppercase;padding:6px 6px;border-bottom:1px solid var(--line)}
+.lab td{padding:7px 6px;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
+.lab th.num,.lab td.num{text-align:right}
+.flag{font-size:.74rem;padding:1px 7px;border-radius:999px;font-weight:600}
+.flag.lo{background:var(--warn-bg);color:var(--warn)}.flag.hi{background:var(--crit-bg);color:var(--crit)}.flag.ok{background:var(--ok-bg);color:var(--ok)}
+.trend{font-size:.8rem}.trend.g{color:var(--ok)}.trend.b{color:var(--crit)}.trend.n{color:var(--muted)}
+.brief{background:linear-gradient(180deg,var(--surface),var(--surface-2));border:1px solid var(--brand);
+  border-radius:14px;padding:17px 19px;box-shadow:var(--shadow)}
+.brief .top{display:flex;align-items:center;gap:9px;margin-bottom:6px}
+.brief .top b{font-size:1rem}
+.brief pre{white-space:pre-wrap;font:inherit;margin:8px 0 0}
+.hint{color:var(--muted);font-size:.82rem}
+.rowbtns{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
+#empty{text-align:center;color:var(--ink-2);padding:60px 20px}
+@media (max-width:920px){.tiles{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- Список клиентов -->
+  <div id="listView">
+    <header>
+      <h1>👥 <span id="brand">Чек Про</span></h1>
+      <span class="sub" id="coachname"></span>
+      <div class="spacer"></div>
+      <button class="btn" id="refresh">Обновить</button>
+      <span class="updated" id="updated"></span>
+    </header>
+    <div class="invite" id="invite" hidden></div>
+    <div id="empty" hidden>
+      <p><b>Клиентов пока нет.</b><br>Отправь клиентам ссылку на бота (выше) — как только
+      кто-то нажмёт Start и даст согласие, он появится здесь.</p>
+    </div>
+    <div class="tablewrap" id="listwrap" hidden>
+      <table class="roster">
+        <thead><tr><th>Клиент</th><th>Статус</th><th class="num">Актив 7д</th>
+        <th class="num">Ккал сегодня</th><th class="num">Чек 7д</th><th class="num">Вода</th><th class="num">Трен.</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Карточка клиента -->
+  <div id="detailView" hidden>
+    <button class="back" id="back">← Все клиенты</button>
+    <div id="detail"></div>
+  </div>
+</div>
+<script>
+"use strict";
+const $=(id)=>document.getElementById(id);
+const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=(n)=>(n??0).toLocaleString("ru-RU");
+const rub=(n)=>String(n).replace(".",",");
+const cssv=(n)=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let clients=[];
+
+async function loadMe(){
+  const me=await (await fetch("/coach/api/me")).json();
+  $("brand").textContent=me.brand||"Чек Про";
+  $("coachname").textContent=me.name?("кабинет · "+me.name):"кабинет тренера";
+  if(me.bot_username){$("invite").hidden=false;
+    $("invite").innerHTML="🔗 Ссылка для клиентов: <code>https://t.me/"+esc(me.bot_username)+"</code> — отправь её клиенту, бот сам всё объяснит.";}
+}
+async function loadList(){
+  const data=await (await fetch("/coach/api/clients",{cache:"no-store"})).json();
+  clients=data.clients||[];
+  $("updated").textContent="обновлено "+(data.generated_at||"");
+  $("empty").hidden=clients.length>0;$("listwrap").hidden=clients.length===0;
+  const icon=(l)=>l==="green"?"✅":(l==="yellow"?"⚠️":"🚨");
+  $("rows").innerHTML=clients.map(c=>`<tr class="client" data-uid="${c.uid}">
+    <td><b>${esc(c.name)}</b></td>
+    <td>${c.flags.map(f=>`<span class="tag ${f.level}">${icon(f.level)} ${esc(f.text)}</span>`).join(" ")}</td>
+    <td class="num">${c.days_logged}/7</td>
+    <td class="num">${fmt(c.kcal_today)}${c.kcal_target?" / "+fmt(c.kcal_target):""}</td>
+    <td class="num">${c.avg_chek!=null?rub(c.avg_chek):"—"}</td>
+    <td class="num">${fmt(c.water_today)}/${fmt(c.water_target)}</td>
+    <td class="num">${c.workouts_done}</td></tr>`).join("");
+  document.querySelectorAll("tr.client").forEach(tr=>tr.addEventListener("click",()=>openClient(Number(tr.dataset.uid))));
+}
+
+// --- рисование графиков ---
+function lineSvg(vals,max,colorVar){
+  const pts=vals.map(v=>v==null?null:v);
+  const w=200,h=50,pad=6;const xs=i=>pad+i*(w-2*pad)/(pts.length-1),ys=v=>h-pad-(v/max)*(h-2*pad);
+  let d="",started=false;pts.forEach((v,i)=>{if(v==null){started=false;return;}d+=(started?" L":"M")+xs(i).toFixed(1)+" "+ys(v).toFixed(1);started=true;});
+  const col=cssv(colorVar);
+  let dots="";pts.forEach((v,i)=>{if(v!=null)dots+=`<circle cx="${xs(i).toFixed(1)}" cy="${ys(v).toFixed(1)}" r="3" fill="${col}" stroke="var(--surface)" stroke-width="1.5"/>`;});
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${d?`<path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`:""}${dots}</svg>`;
+}
+function barsSvg(vals,max,target,colorVar){
+  const w=200,h=50,pad=6,n=vals.length,bw=Math.min(16,(w-2*pad)/n-3);const col=cssv(colorVar);
+  let bars="";vals.forEach((v,i)=>{const bh=(v/max)*(h-2*pad);const x=pad+i*((w-2*pad)/n)+((w-2*pad)/n-bw)/2;
+    if(v>0)bars+=`<rect x="${x.toFixed(1)}" y="${(h-pad-bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2.5" fill="${col}"/>`;});
+  let tl="";if(target){const ty=h-pad-(target/max)*(h-2*pad);tl=`<line x1="${pad}" x2="${w-pad}" y1="${ty.toFixed(1)}" y2="${ty.toFixed(1)}" stroke="${cssv('--baseline')}" stroke-width="1" stroke-dasharray="4 3"/>`;}
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${bars}${tl}</svg>`;
+}
+function niceMax(m){const st=[100,200,250,500,1000,2000,2500,5000];for(const s of st){if(Math.ceil(m/s)<=5)return Math.ceil(m/s)*s;}return Math.ceil(m/5000)*5000;}
+
+function tile(cls,lbl,val,d){return `<div class="tile ${cls||''}"><div class="lbl">${lbl}</div><div class="val">${val}</div>${d?`<div class="d">${d}</div>`:""}</div>`;}
+function emptyTile(lbl,txt){return `<div class="tile empty"><div class="lbl">${lbl}</div><div class="val">${txt}</div></div>`;}
+
+async function openClient(uid){
+  $("listView").hidden=true;$("detailView").hidden=false;window.scrollTo(0,0);
+  $("detail").innerHTML="<p class='hint'>Загружаю…</p>";
+  const s=await (await fetch(`/coach/api/client?uid=${uid}&days=7`)).json();
+  renderDetail(uid,s);
+}
+
+function renderDetail(uid,s){
+  const t=s.today,tg=s.targets,st=s.stats;
+  const meta=[s.sex,s.age?s.age+" лет":null,s.goal?("цель: "+String(s.goal).toLowerCase()):null].filter(Boolean).join(" · ");
+  // статус-пилюли
+  const pills=[];
+  const logged=s.series.filter(x=>x.meals||x.water||x.wi||x.workout);
+  const last=logged.length?logged[logged.length-1]:null;
+  let silent=null;if(last){silent=Math.round((Date.now()-new Date(last.date))/86400000);}
+  if(!last)pills.push(`<span class="pill crit">🚨 ещё не начал</span>`);
+  else if(silent>=2)pills.push(`<span class="pill crit">🚨 молчит ${silent} дн.</span>`);
+  if(st.avg_chek!=null&&st.avg_chek<5)pills.push(`<span class="pill warn">⚠️ качество еды низкое</span>`);
+  if(tg.kcal&&st.avg_kcal&&st.avg_kcal<0.7*tg.kcal)pills.push(`<span class="pill warn">⚠️ ест ниже нормы</span>`);
+  if(!pills.length)pills.push(`<span class="pill ok">✅ в порядке</span>`);
+
+  // плитки
+  const kcalCls=tg.kcal&&(t.kcal<0.7*tg.kcal||t.kcal>1.15*tg.kcal)?"warn":"";
+  const protCls=tg.protein&&t.protein<0.6*tg.protein?"crit":"";
+  const chekCls=st.avg_chek!=null&&st.avg_chek<5?"warn":"";
+  const tiles=[
+    tile(kcalCls,"🔥 Ккал сегодня",`${fmt(t.kcal)}${tg.kcal?` <small>/ ${fmt(tg.kcal)}</small>`:""}`,tg.kcal?`ср. за 7д ${fmt(st.avg_kcal)}`:"норма не задана"),
+    tile(protCls,"💪 Белок",`${fmt(t.protein)}${tg.protein?` <small>/ ${tg.protein} г</small>`:" г"}`,protCls?"ниже цели":""),
+    tile(chekCls,"🍽 Чек 7д",st.avg_chek!=null?`${rub(st.avg_chek)}<small>/10</small>`:"—","качество еды"),
+    tile("","💧 Вода",`${fmt(t.water)} <small>/ ${fmt(tg.water)}</small>`,t.water>=tg.water?"норма":"мл, ниже нормы"),
+  ];
+  if(s.oura&&s.oura.latest){const o=s.oura.latest;
+    tiles.push(tile(o.readiness&&o.readiness<70?"warn":"","💍 Готовность",`${o.readiness??"—"}`,"с кольца"));
+    tiles.push(tile("","😴 Сон",o.sleep_h?`${rub(o.sleep_h)}<small> ч</small>`:"—","с кольца"));
+  }else{
+    tiles.push(emptyTile("💍 Готовность","Данных нет"));
+    tiles.push(emptyTile("😴 Сон","кольцо не подключено"));
+  }
+
+  // графики 7 дней
+  const kmax=niceMax(Math.max(tg.kcal||0,...s.series.map(x=>x.kcal))*1.05);
+  const wmax=niceMax(Math.max(tg.water||0,...s.series.map(x=>x.water))*1.05);
+  const chartsHtml=`
+    <div class="chart"><div class="ct">Калории</div><div class="cv">${fmt(t.kcal)}</div>${barsSvg(s.series.map(x=>x.kcal),kmax,tg.kcal,'--s3')}</div>
+    <div class="chart"><div class="ct">Чек</div><div class="cv">${st.avg_chek!=null?rub(st.avg_chek):"—"}</div>${lineSvg(s.series.map(x=>x.chek),10,'--brand')}</div>
+    <div class="chart"><div class="ct">Вода</div><div class="cv">${fmt(t.water)}</div>${barsSvg(s.series.map(x=>x.water),wmax,tg.water,'--s1')}</div>
+    ${s.oura&&s.oura.series?`<div class="chart"><div class="ct">Готовность</div><div class="cv">${s.oura.latest.readiness??"—"}</div>${lineSvg(s.oura.series.map(x=>x.readiness??null),100,'--warn')}</div>`
+      :`<div class="chart"><div class="ct">Сон и готовность</div><div class="nodata" style="margin-top:6px;padding:10px">💍 Кольцо не подключено</div></div>`}`;
+
+  // самочувствие
+  let wbHtml;
+  if(s.wellbeing){const a=s.wellbeing.avg;
+    const row=(lbl,v,col)=>v==null?"":`<div class="wb-row"><span>${lbl}</span><span class="bar"><i style="width:${v*10}%;background:${col}"></i></span><span class="n">${rub(v)}</span></div>`;
+    wbHtml=`<div class="wb">${row("⚡️ Энергия",a.energy,cssv('--warn'))}${row("🙂 Настроение",a.mood,cssv('--s1'))}${row("😤 Стресс",a.stress,cssv('--crit'))}${row("❤️ Либидо",a.libido,cssv('--warn'))}</div>`;
+    if(s.wellbeing.latest&&s.wellbeing.latest.note)wbHtml+=`<p class="cap" style="margin-top:10px">Заметка: «${esc(s.wellbeing.latest.note)}»</p>`;
+  }else wbHtml=`<div class="nodata">Данных нет — клиент не отмечал самочувствие</div>`;
+
+  // БАДы
+  let supHtml;
+  if(s.supplements){
+    supHtml=`<div class="supp">${s.supplements.list.map(x=>`<div class="supp-row"><span class="box ${x.taken?'on':'off'}">${x.taken?'✓':''}</span> ${esc(x.name)} <span class="tm">${esc(x.timing||'')}</span></div>`).join("")}</div>`;
+  }else supHtml=`<div class="nodata">Данных нет — клиент не ведёт БАДы</div>`;
+
+  // анализы
+  let labHtml;
+  if(s.labs){
+    const rows=s.labs.markers.map(m=>{
+      const val=m.value_text||(m.value!=null?rub(m.value):"?");
+      const ref=(m.ref_low!=null||m.ref_high!=null)?`${m.ref_low!=null?rub(m.ref_low):""}–${m.ref_high!=null?rub(m.ref_high):""}`:"—";
+      const fl=m.flag==="низко"?`<span class="flag lo">🔽 низко</span>`:m.flag==="высоко"?`<span class="flag hi">🔼 высоко</span>`:`<span class="flag ok">✅ норма</span>`;
+      let tr='<span class="trend n">—</span>';
+      if(m.prev!=null&&m.value!=null){const diff=m.value-m.prev;const cls=diff===0?"n":((diff>0)===(m.flag==="высоко")?"b":"g");
+        tr=`<span class="trend ${cls}">${diff>0?"↑":(diff<0?"↓":"=")} было ${rub(m.prev)}</span>`;}
+      return `<tr><td>${esc(m.name)}</td><td class="num">${val} ${esc(m.unit||"")}</td><td>${ref}</td><td>${fl}</td><td class="num">${tr}</td></tr>`;
+    }).join("");
+    labHtml=`<div class="lab" style="overflow-x:auto"><table><thead><tr><th>Показатель</th><th class="num">Значение</th><th>Норма</th><th>Статус</th><th class="num">Δ к прошлому</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }else labHtml=`<div class="nodata">Данных нет — анализы не загружены (клиент присылает боту фото или PDF бланка)</div>`;
+
+  $("detail").innerHTML=`
+    <div class="chead"><h2>${esc(s.name||"Клиент")}</h2>${pills.join("")}</div>
+    <p class="sub">${esc(meta)||"профиль не заполнен"}${last?` · последняя запись ${last.label}`:""}</p>
+    <div class="tiles">${tiles.join("")}</div>
+    <div class="card"><h3>7 дней <span class="src">${s.oura?'Oura + бот':'бот'}</span></h3>
+      <p class="cap">Динамика по дням</p><div class="charts">${chartsHtml}</div></div>
+    <div class="grid2">
+      <div class="card"><h3>Самочувствие <span class="src">дневник</span></h3><p class="cap">Средние за неделю</p>${wbHtml}</div>
+      <div class="card"><h3>БАДы ${s.supplements?`<span class="src">${s.supplements.taken}/${s.supplements.total}</span>`:''}</h3><p class="cap">Приём за сегодня</p>${supHtml}</div>
+    </div>
+    <div class="card"><h3>Анализы ${s.labs?`<span class="src">${s.labs.dates.length} загр. · ${s.labs.last_date}</span>`:''}</h3><p class="cap">Показатели и динамика</p>${labHtml}</div>
+    <div class="brief">
+      <div class="top">🧠 <b>AI-бриф недели</b></div>
+      <p class="cap">Соберёт всё выше в сводку и черновик сообщения клиенту (30–60 сек)</p>
+      <div class="rowbtns"><button class="btn primary" id="briefbtn">🧠 Собрать бриф</button></div>
+      <div id="briefbox"></div>
+    </div>`;
+  $("briefbtn").addEventListener("click",()=>makeBrief(uid));
+}
+
+async function makeBrief(uid){
+  const btn=$("briefbtn"),box=$("briefbox");
+  btn.disabled=true;btn.textContent="🧠 Думаю…";
+  try{
+    const data=await (await fetch(`/coach/api/brief?uid=${uid}`,{method:"POST"})).json();
+    if(data.brief){
+      box.innerHTML=`<pre>${esc(data.brief)}</pre><div class="rowbtns"><button class="btn" id="copybtn">📋 Скопировать</button></div>`;
+      $("copybtn").addEventListener("click",async()=>{try{await navigator.clipboard.writeText(data.brief);$("copybtn").textContent="✅ Скопировано";}catch(e){$("copybtn").textContent="выдели вручную";}});
+    }else box.innerHTML=`<pre>⚠️ ${esc(data.error||"не получилось")}</pre>`;
+  }catch(e){box.innerHTML=`<pre>⚠️ Ошибка сети — попробуй ещё раз</pre>`;}
+  btn.disabled=false;btn.textContent="🧠 Собрать бриф";
+}
+
+$("back").addEventListener("click",()=>{$("detailView").hidden=true;$("listView").hidden=false;loadList();});
+$("refresh").addEventListener("click",loadList);
+loadMe();loadList();
+</script>
+</body>
+</html>

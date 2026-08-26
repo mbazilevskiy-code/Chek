@@ -1,0 +1,10 @@
+# Секреты и данные — НИКОГДА не должны попадать в GitHub
+.env
+*.db
+server.txt
+
+# Служебное
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
