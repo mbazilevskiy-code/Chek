@@ -118,6 +118,33 @@ table.roster{width:100%;border-collapse:collapse;font-size:.92rem;background:var
 .hint{color:var(--muted);font-size:.82rem}
 .rowbtns{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
 #empty{text-align:center;color:var(--ink-2);padding:60px 20px}
+/* ---- переключатель периода ---- */
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
+  padding:2px;gap:2px;margin:12px 0 2px;flex-wrap:wrap}
+.seg button{border:0;background:none;color:var(--ink-2);font:inherit;font-size:.84rem;font-weight:600;
+  padding:6px 14px;border-radius:8px;cursor:pointer;white-space:nowrap}
+.seg button.on{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.seg button:disabled{opacity:.55;cursor:progress}
+/* ---- точечные значения (режим «Сегодня») ---- */
+.pt{display:flex;gap:22px;flex-wrap:wrap}
+.pt .p .k{font-size:.76rem;color:var(--ink-2)}
+.pt .p .v{font-size:1.15rem;font-weight:650;margin-top:2px}
+.pt .p .v small{font-size:.8rem;font-weight:400;color:var(--muted)}
+/* ---- адгеренс по БАДам ---- */
+.adh{display:flex;flex-direction:column;gap:13px}
+.adh-row .top{display:flex;align-items:baseline;gap:8px;font-size:.88rem}
+.adh-row .nm{font-weight:600}
+.adh-row .plan{color:var(--muted);font-size:.78rem}
+.adh-row .cnt{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:650;white-space:nowrap}
+.adh-row .bar{display:block;margin-top:6px}
+.dots{display:flex;flex-wrap:wrap;gap:3px;margin-top:7px}
+.dots i{width:9px;height:9px;border-radius:50%;background:var(--grid);display:block}
+.dots i.on{background:var(--ok)}
+.dots i.today{outline:1.5px solid var(--brand);outline-offset:1px}
+.wk{display:flex;gap:4px;margin-top:7px;flex-wrap:wrap}
+.wk b{font-size:.72rem;font-weight:600;color:var(--ink-2);background:var(--surface-2);
+  border:1px solid var(--line);border-radius:6px;padding:1px 7px;font-variant-numeric:tabular-nums}
+.wk b.zero{color:var(--muted)}
 @media (max-width:920px){.tiles{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}
 </style>
 </head>
@@ -204,56 +231,157 @@ function barsSvg(vals,max,target,colorVar){
 function niceMax(m){const st=[100,200,250,500,1000,2000,2500,5000];for(const s of st){if(Math.ceil(m/s)<=5)return Math.ceil(m/s)*s;}return Math.ceil(m/5000)*5000;}
 
 function tile(cls,lbl,val,d){return `<div class="tile ${cls||''}"><div class="lbl">${lbl}</div><div class="val">${val}</div>${d?`<div class="d">${d}</div>`:""}</div>`;}
+// один кружок на день окна: залит — БАД отмечен принятым
+function adhDots(x,wd){
+  const dates=windowDates(wd),set=new Set(x.taken_dates||[]),today=isoDate(new Date());
+  return `<div class="dots">${dates.map(d=>
+    `<i class="${set.has(d)?"on":""}${d===today?" today":""}" title="${d}"></i>`).join("")}</div>`;
+}
+// на месяце-квартале точек слишком много — сворачиваем в недельные счётчики
+function adhWeeks(x,wd){
+  const dates=windowDates(wd),set=new Set(x.taken_dates||[]),weeks=new Map();
+  dates.forEach(d=>{const k=isoWeekKey(d);
+    if(!weeks.has(k))weeks.set(k,{n:0,first:d});
+    if(set.has(d))weeks.get(k).n++;});
+  return `<div class="wk">${[...weeks.values()].map(w=>
+    `<b class="${w.n?"":"zero"}" title="неделя с ${w.first}">${w.n}</b>`).join("")}</div>`;
+}
 function emptyTile(lbl,txt){return `<div class="tile empty"><div class="lbl">${lbl}</div><div class="val">${txt}</div></div>`;}
 
+// --- период просмотра ---
+const PERIODS=[
+  {key:"1",   btn:"Сегодня", cap:"за сегодня"},
+  {key:"7",   btn:"Неделя",  cap:"за неделю"},
+  {key:"30",  btn:"Месяц",   cap:"за месяц"},
+  {key:"365", btn:"Год",     cap:"за год"},
+  {key:"all", btn:"Всё",     cap:"за всё время"},
+];
+let period="7",curUid=null;
+const curPeriod=()=>PERIODS.find(x=>x.key===period)||PERIODS[1];
+
+const isoDate=(d)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+function windowDates(n){
+  const out=[],now=new Date();
+  for(let i=n-1;i>=0;i--){const d=new Date(now);d.setDate(now.getDate()-i);out.push(isoDate(d));}
+  return out;
+}
+function isoWeekKey(ds){
+  const d=new Date(ds+"T00:00:00"),t=new Date(d);
+  t.setDate(d.getDate()+4-(d.getDay()||7));
+  const jan1=new Date(t.getFullYear(),0,1);
+  return t.getFullYear()+"-W"+String(Math.ceil((((t-jan1)/86400000)+1)/7)).padStart(2,"0");
+}
+const planLabel=(n)=>n>=7?"каждый день":`${n} раз${n>=2&&n<=4?"а":""} в неделю`;
+
 async function openClient(uid){
+  curUid=uid;
   $("listView").hidden=true;$("detailView").hidden=false;window.scrollTo(0,0);
   $("detail").innerHTML="<p class='hint'>Загружаю…</p>";
-  const s=await (await fetch(`/coach/api/client?uid=${uid}&days=7`)).json();
-  renderDetail(uid,s);
+  await loadDetail();
 }
 
-function renderDetail(uid,s){
+async function loadDetail(){
+  const p=curPeriod();
+  try{
+    const s=await (await fetch(`/coach/api/client?uid=${curUid}&days=${p.key}`)).json();
+    renderDetail(curUid,s,p);
+  }catch(e){
+    $("detail").innerHTML="<p class='hint'>⚠️ Не удалось загрузить — попробуй ещё раз</p>";
+  }
+}
+
+function segHtml(){
+  return `<div class="seg" id="seg">${PERIODS.map(p=>
+    `<button data-k="${p.key}" class="${p.key===period?"on":""}">${p.btn}</button>`).join("")}</div>`;
+}
+function wireSeg(){
+  const seg=$("seg");if(!seg)return;
+  seg.querySelectorAll("button").forEach(b=>b.addEventListener("click",async()=>{
+    if(b.dataset.k===period)return;
+    period=b.dataset.k;
+    seg.querySelectorAll("button").forEach(x=>{x.classList.toggle("on",x.dataset.k===period);x.disabled=true;});
+    await loadDetail();
+  }));
+}
+
+function renderDetail(uid,s,p){
+  p=p||curPeriod();
   const t=s.today,tg=s.targets,st=s.stats;
+  const isDay=(s.days||7)<=1;          // режим «Сегодня»
+  const byWeek=s.bucket==="week";      // ряды схлопнуты в недели
+  const cap=p.cap;
   const meta=[s.sex,s.age?s.age+" лет":null,s.goal?("цель: "+String(s.goal).toLowerCase()):null].filter(Boolean).join(" · ");
+  // среднее по ряду; в недельном режиме это среднее недельных средних
+  const avgOf=(k)=>{const v=s.series.map(x=>x[k]).filter(x=>x!=null&&x>0);
+    return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):0;};
+
   // статус-пилюли
   const pills=[];
-  const logged=s.series.filter(x=>x.meals||x.water||x.wi||x.workout);
-  const last=logged.length?logged[logged.length-1]:null;
-  let silent=null;if(last){silent=Math.round((Date.now()-new Date(last.date))/86400000);}
+  const last=s.last_activity||null;
+  const silent=last?Math.round((Date.now()-new Date(last+"T00:00:00"))/86400000):null;
   if(!last)pills.push(`<span class="pill crit">🚨 ещё не начал</span>`);
   else if(silent>=2)pills.push(`<span class="pill crit">🚨 молчит ${silent} дн.</span>`);
   if(st.avg_chek!=null&&st.avg_chek<5)pills.push(`<span class="pill warn">⚠️ качество еды низкое</span>`);
   if(tg.kcal&&st.avg_kcal&&st.avg_kcal<0.7*tg.kcal)pills.push(`<span class="pill warn">⚠️ ест ниже нормы</span>`);
   if(!pills.length)pills.push(`<span class="pill ok">✅ в порядке</span>`);
 
-  // плитки
-  const kcalCls=tg.kcal&&(t.kcal<0.7*tg.kcal||t.kcal>1.15*tg.kcal)?"warn":"";
-  const protCls=tg.protein&&t.protein<0.6*tg.protein?"crit":"";
+  // плитки — за выбранный период
+  const kcalVal=isDay?t.kcal:st.avg_kcal;
+  const protVal=isDay?t.protein:avgOf("protein");
+  const waterVal=isDay?t.water:avgOf("water");
+  const kcalCls=tg.kcal&&kcalVal&&(kcalVal<0.7*tg.kcal||kcalVal>1.15*tg.kcal)?"warn":"";
+  const protCls=tg.protein&&protVal<0.6*tg.protein?"crit":"";
   const chekCls=st.avg_chek!=null&&st.avg_chek<5?"warn":"";
   const tiles=[
-    tile(kcalCls,"🔥 Ккал сегодня",`${fmt(t.kcal)}${tg.kcal?` <small>/ ${fmt(tg.kcal)}</small>`:""}`,tg.kcal?`ср. за 7д ${fmt(st.avg_kcal)}`:"норма не задана"),
-    tile(protCls,"💪 Белок",`${fmt(t.protein)}${tg.protein?` <small>/ ${tg.protein} г</small>`:" г"}`,protCls?"ниже цели":""),
-    tile(chekCls,"🍽 Чек 7д",st.avg_chek!=null?`${rub(st.avg_chek)}<small>/10</small>`:"—","качество еды"),
-    tile("","💧 Вода",`${fmt(t.water)} <small>/ ${fmt(tg.water)}</small>`,t.water>=tg.water?"норма":"мл, ниже нормы"),
+    tile(kcalCls,isDay?"🔥 Ккал сегодня":`🔥 Ккал ср. ${cap}`,
+      `${fmt(kcalVal)}${tg.kcal?` <small>/ ${fmt(tg.kcal)}</small>`:""}`,
+      tg.kcal?(isDay?"":`сегодня ${fmt(t.kcal)}`):"норма не задана"),
+    tile(protCls,isDay?"💪 Белок сегодня":`💪 Белок ср. ${cap}`,
+      `${fmt(protVal)}${tg.protein?` <small>/ ${tg.protein} г</small>`:" г"}`,protCls?"ниже цели":""),
+    tile(chekCls,`🍽 Чек ${cap}`,st.avg_chek!=null?`${rub(st.avg_chek)}<small>/10</small>`:"—","качество еды"),
+    tile("",isDay?"💧 Вода сегодня":`💧 Вода ср. ${cap}`,
+      `${fmt(waterVal)} <small>/ ${fmt(tg.water)}</small>`,waterVal>=tg.water?"норма":"мл, ниже нормы"),
   ];
-  if(s.oura&&s.oura.latest){const o=s.oura.latest;
-    tiles.push(tile(o.readiness&&o.readiness<70?"warn":"","💍 Готовность",`${o.readiness??"—"}`,"с кольца"));
-    tiles.push(tile("","😴 Сон",o.sleep_h?`${rub(o.sleep_h)}<small> ч</small>`:"—","с кольца"));
+  if(s.oura&&s.oura.latest){
+    const o=s.oura.latest,a=s.oura.avg||{};
+    const rd=isDay?o.readiness:a.readiness,sl=isDay?o.sleep_h:a.sleep_h,hv=isDay?o.hrv:a.hrv;
+    tiles.push(tile(rd!=null&&rd<70?"warn":"",isDay?"💍 Готовность":"💍 Готовность ср.",
+      `${rd??"—"}`,isDay?"с кольца":cap));
+    tiles.push(tile("",isDay?"😴 Сон":"😴 Сон ср.",sl!=null?`${rub(sl)}<small> ч</small>`:"—",
+      hv!=null?`HRV ${rub(hv)}`:"с кольца"));
   }else{
     tiles.push(emptyTile("💍 Готовность","Данных нет"));
     tiles.push(emptyTile("😴 Сон","кольцо не подключено"));
   }
 
-  // графики 7 дней
-  const kmax=niceMax(Math.max(tg.kcal||0,...s.series.map(x=>x.kcal))*1.05);
-  const wmax=niceMax(Math.max(tg.water||0,...s.series.map(x=>x.water))*1.05);
-  const chartsHtml=`
-    <div class="chart"><div class="ct">Калории</div><div class="cv">${fmt(t.kcal)}</div>${barsSvg(s.series.map(x=>x.kcal),kmax,tg.kcal,'--s3')}</div>
-    <div class="chart"><div class="ct">Чек</div><div class="cv">${st.avg_chek!=null?rub(st.avg_chek):"—"}</div>${lineSvg(s.series.map(x=>x.chek),10,'--brand')}</div>
-    <div class="chart"><div class="ct">Вода</div><div class="cv">${fmt(t.water)}</div>${barsSvg(s.series.map(x=>x.water),wmax,tg.water,'--s1')}</div>
-    ${s.oura&&s.oura.series?`<div class="chart"><div class="ct">Готовность</div><div class="cv">${s.oura.latest.readiness??"—"}</div>${lineSvg(s.oura.series.map(x=>x.readiness??null),100,'--warn')}</div>`
-      :`<div class="chart"><div class="ct">Сон и готовность</div><div class="nodata" style="margin-top:6px;padding:10px">💍 Кольцо не подключено</div></div>`}`;
+  // динамика: за один день спарклайны бессмысленны — точечные значения и чек-лист
+  let dynHtml,dynCap;
+  if(isDay){
+    dynCap="Точечные значения и чек-лист на сегодня";
+    const wk=t.workout==="done"?"✅ выполнена":(t.workout==="skipped"?"⏭ пропущена":"—");
+    const sup=s.supplements?`${s.supplements.taken} / ${s.supplements.total}`:"—";
+    dynHtml=`<div class="pt">
+      <div class="p"><div class="k">Приёмов пищи</div><div class="v">${fmt(t.meals)}</div></div>
+      <div class="p"><div class="k">Калории</div><div class="v">${fmt(t.kcal)}${tg.kcal?` <small>/ ${fmt(tg.kcal)}</small>`:""}</div></div>
+      <div class="p"><div class="k">Чек</div><div class="v">${t.chek!=null?rub(t.chek):"—"}<small>/10</small></div></div>
+      <div class="p"><div class="k">Вода</div><div class="v">${fmt(t.water)} <small>/ ${fmt(tg.water)}</small></div></div>
+      <div class="p"><div class="k">Тренировка</div><div class="v">${wk}</div></div>
+      <div class="p"><div class="k">Working In</div><div class="v">${t.wi?"✅":"—"}</div></div>
+      <div class="p"><div class="k">БАДы</div><div class="v">${sup}</div></div>
+    </div>`;
+  }else{
+    dynCap=byWeek?"Среднее по неделям — на длинном окне дневные точки не читаются":"Динамика по дням";
+    const kmax=niceMax(Math.max(tg.kcal||0,...s.series.map(x=>x.kcal||0))*1.05);
+    const wmax=niceMax(Math.max(tg.water||0,...s.series.map(x=>x.water||0))*1.05);
+    const oAvg=(s.oura&&s.oura.avg)?s.oura.avg.readiness:null;
+    dynHtml=`<div class="charts">
+      <div class="chart"><div class="ct">Калории</div><div class="cv">${fmt(st.avg_kcal)}</div>${barsSvg(s.series.map(x=>x.kcal||0),kmax,tg.kcal,'--s3')}</div>
+      <div class="chart"><div class="ct">Чек</div><div class="cv">${st.avg_chek!=null?rub(st.avg_chek):"—"}</div>${lineSvg(s.series.map(x=>x.chek),10,'--brand')}</div>
+      <div class="chart"><div class="ct">Вода</div><div class="cv">${fmt(avgOf("water"))}</div>${barsSvg(s.series.map(x=>x.water||0),wmax,tg.water,'--s1')}</div>
+      ${s.oura&&s.oura.series?`<div class="chart"><div class="ct">Готовность</div><div class="cv">${oAvg??"—"}</div>${lineSvg(s.oura.series.map(x=>x.readiness??null),100,'--warn')}</div>`
+        :`<div class="chart"><div class="ct">Сон и готовность</div><div class="nodata" style="margin-top:6px;padding:10px">💍 Кольцо не подключено</div></div>`}
+    </div>`;
+  }
 
   // самочувствие
   let wbHtml;
@@ -263,11 +391,34 @@ function renderDetail(uid,s){
     if(s.wellbeing.latest&&s.wellbeing.latest.note)wbHtml+=`<p class="cap" style="margin-top:10px">Заметка: «${esc(s.wellbeing.latest.note)}»</p>`;
   }else wbHtml=`<div class="nodata">Данных нет — клиент не отмечал самочувствие</div>`;
 
-  // БАДы
-  let supHtml;
+  // БАДы: план приёма против факта за период
+  let supHtml,supHead="",supCap;
   if(s.supplements){
-    supHtml=`<div class="supp">${s.supplements.list.map(x=>`<div class="supp-row"><span class="box ${x.taken?'on':'off'}">${x.taken?'✓':''}</span> ${esc(x.name)} <span class="tm">${esc(x.timing||'')}</span></div>`).join("")}</div>`;
-  }else supHtml=`<div class="nodata">Данных нет — клиент не ведёт БАДы</div>`;
+    const sp=s.supplements,wd=sp.window_days||1;
+    supHead=isDay?`<span class="src">${sp.taken}/${sp.total}</span>`
+                 :`<span class="src">${sp.taken_total} из ${sp.planned_total}</span>`;
+    supCap=isDay?"Приём за сегодня"
+                :`Выполнение плана ${cap} · сегодня ${sp.taken}/${sp.total}`;
+    if(isDay){
+      supHtml=`<div class="supp">${sp.list.map(x=>
+        `<div class="supp-row"><span class="box ${x.today_taken?'on':'off'}">${x.today_taken?'✓':''}</span> ${esc(x.name)}
+         <span class="tm">${esc(x.timing||'')}${x.timing?' · ':''}${planLabel(x.plan_days_per_week)}</span></div>`).join("")}</div>`;
+    }else{
+      supHtml=`<div class="adh">${sp.list.map(x=>{
+        const pct=x.planned>0?Math.min(100,Math.round(x.taken/x.planned*100)):(x.taken>0?100:0);
+        const col=x.planned>0&&x.taken>=x.planned?cssv('--ok'):(pct>=60?cssv('--warn'):cssv('--crit'));
+        const extra=wd<=42?adhDots(x,wd):(wd<=120?adhWeeks(x,wd):"");
+        return `<div class="adh-row"><div class="top">
+            <span class="nm">${esc(x.name)}</span>
+            <span class="plan">${esc(x.timing||'')}${x.timing?' · ':''}${planLabel(x.plan_days_per_week)}</span>
+            <span class="cnt">${x.taken} из ${x.planned}</span></div>
+          <span class="bar"><i style="width:${pct}%;background:${col}"></i></span>${extra}</div>`;
+      }).join("")}</div>`;
+    }
+  }else{
+    supHtml=`<div class="nodata">Данных нет — клиент не ведёт БАДы</div>`;
+    supCap=isDay?"Приём за сегодня":`Выполнение плана ${cap}`;
+  }
 
   // анализы
   let labHtml;
@@ -282,19 +433,20 @@ function renderDetail(uid,s){
       return `<tr><td>${esc(m.name)}</td><td class="num">${val} ${esc(m.unit||"")}</td><td>${ref}</td><td>${fl}</td><td class="num">${tr}</td></tr>`;
     }).join("");
     labHtml=`<div class="lab" style="overflow-x:auto"><table><thead><tr><th>Показатель</th><th class="num">Значение</th><th>Норма</th><th>Статус</th><th class="num">Δ к прошлому</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-  }else labHtml=`<div class="nodata">Данных нет — анализы не загружены (клиент присылает боту фото или PDF бланка)</div>`;
+  }else labHtml=`<div class="nodata">Данных нет — бланков ${cap} не было (клиент присылает боту фото или PDF бланка)</div>`;
 
   $("detail").innerHTML=`
     <div class="chead"><h2>${esc(s.name||"Клиент")}</h2>${pills.join("")}</div>
-    <p class="sub">${esc(meta)||"профиль не заполнен"}${last?` · последняя запись ${last.label}`:""}</p>
+    <p class="sub">${esc(meta)||"профиль не заполнен"}${s.last_activity_label?` · последняя запись ${s.last_activity_label}`:""}</p>
+    ${segHtml()}
     <div class="tiles">${tiles.join("")}</div>
-    <div class="card"><h3>7 дней <span class="src">${s.oura?'Oura + бот':'бот'}</span></h3>
-      <p class="cap">Динамика по дням</p><div class="charts">${chartsHtml}</div></div>
+    <div class="card"><h3>${isDay?"Сегодня":"Динамика "+cap} <span class="src">${s.oura?'Oura + бот':'бот'}</span></h3>
+      <p class="cap">${dynCap}</p>${dynHtml}</div>
     <div class="grid2">
-      <div class="card"><h3>Самочувствие <span class="src">дневник</span></h3><p class="cap">Средние за неделю</p>${wbHtml}</div>
-      <div class="card"><h3>БАДы ${s.supplements?`<span class="src">${s.supplements.taken}/${s.supplements.total}</span>`:''}</h3><p class="cap">Приём за сегодня</p>${supHtml}</div>
+      <div class="card"><h3>Самочувствие <span class="src">дневник</span></h3><p class="cap">${isDay?"За сегодня":"Средние "+cap}</p>${wbHtml}</div>
+      <div class="card"><h3>БАДы ${supHead}</h3><p class="cap">${supCap}</p>${supHtml}</div>
     </div>
-    <div class="card"><h3>Анализы ${s.labs?`<span class="src">${s.labs.dates.length} загр. · ${s.labs.last_date}</span>`:''}</h3><p class="cap">Показатели и динамика</p>${labHtml}</div>
+    <div class="card"><h3>Анализы ${s.labs?`<span class="src">${s.labs.dates.length} загр. · ${s.labs.last_date}</span>`:''}</h3><p class="cap">Бланки ${cap} · динамика к предыдущему значению</p>${labHtml}</div>
     <div class="brief">
       <div class="top">🧠 <b>AI-бриф недели</b></div>
       <p class="cap">Соберёт всё выше в сводку и черновик сообщения клиенту (30–60 сек)</p>
@@ -302,6 +454,7 @@ function renderDetail(uid,s){
       <div id="briefbox"></div>
     </div>`;
   $("briefbtn").addEventListener("click",()=>makeBrief(uid));
+  wireSeg();
 }
 
 async function makeBrief(uid){

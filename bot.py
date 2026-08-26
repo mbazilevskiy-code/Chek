@@ -1077,10 +1077,27 @@ async def reminder_loop() -> None:
 
 TIMINGS = ["утром", "днём", "вечером", "на ночь", "с едой"]
 
+# План приёма: сколько дней в неделю клиент планирует принимать добавку.
+PLAN_LABELS = {7: "каждый день", 6: "6 раз в неделю", 5: "5 раз в неделю",
+               4: "4 раза в неделю", 3: "3 раза в неделю", 2: "2 раза в неделю",
+               1: "1 раз в неделю"}
+PLAN_KB = [["каждый день"], ["6 раз в неделю", "5 раз в неделю"],
+           ["4 раза в неделю", "3 раза в неделю"], ["2 раза в неделю", "1 раз в неделю"]]
+
+
+def _parse_plan(text: str | None) -> int | None:
+    """«каждый день» → 7, «3 раза в неделю» → 3. None — не разобрали."""
+    t = (text or "").strip().lower()
+    if t in ("каждый день", "ежедневно", "каждый"):
+        return 7
+    m = re.search(r"[1-7]", t)
+    return int(m.group()) if m else None
+
 
 class AddSuppl(StatesGroup):
     name = State()
     timing = State()
+    plan = State()
 
 
 def suppl_kb(uid: int, date: str) -> InlineKeyboardMarkup:
@@ -1104,8 +1121,14 @@ def suppl_text(uid: int, date: str) -> str:
         return ("💊 <b>БАДы и добавки</b>\n\nСписок пуст. Нажми «Добавить» — укажешь название "
                 "и когда принимаешь. Я проверю набор на совместимость.")
     taken = db.taken_supplements(uid, date)
+    lines = []
+    for s in supps:
+        plan = s["plan_days_per_week"] or 7
+        parts = [p for p in (s["timing"], PLAN_LABELS.get(plan, f"{plan} раз в неделю")) if p]
+        lines.append(f"• {html.escape(s['name'])} — {' · '.join(parts)}")
     return (f"💊 <b>БАДы сегодня: {len(taken)}/{len(supps)}</b>\n"
-            "Отметь принятые кнопками. Проверить набор — «Совместимость».")
+            + "\n".join(lines)
+            + "\n\nОтметь принятые кнопками. Проверить набор — «Совместимость».")
 
 
 @router.message(Command("supplements", "bad", "supps"))
@@ -1198,12 +1221,24 @@ async def add_suppl_timing(message: Message, state: FSMContext) -> None:
     if timing not in TIMINGS and timing != "не важно":
         await message.answer("Выбери кнопкой 🙂", reply_markup=_kb([[t] for t in TIMINGS] + [["Не важно"]]))
         return
+    await state.update_data(timing="" if timing == "не важно" else timing)
+    await state.set_state(AddSuppl.plan)
+    await message.answer("Как часто планируешь принимать?", reply_markup=_kb(PLAN_KB))
+
+
+@router.message(AddSuppl.plan)
+async def add_suppl_plan(message: Message, state: FSMContext) -> None:
+    plan = _parse_plan(message.text)
+    if plan is None:
+        await message.answer("Выбери кнопкой 🙂", reply_markup=_kb(PLAN_KB))
+        return
     data = await state.get_data()
     await state.clear()
     uid = message.from_user.id
-    db.add_supplement(uid, data["name"], "" if timing == "не важно" else timing)
-    await message.answer(f"✅ Добавил: <b>{html.escape(data['name'])}</b>",
-                         reply_markup=ReplyKeyboardRemove())
+    db.add_supplement(uid, data["name"], data.get("timing", ""), plan)
+    await message.answer(
+        f"✅ Добавил: <b>{html.escape(data['name'])}</b> — {PLAN_LABELS[plan]}",
+        reply_markup=ReplyKeyboardRemove())
     await _run_suppl_check(message, uid)
 
 

@@ -175,6 +175,12 @@ _USER_COLUMNS = {
     "consent": "INTEGER DEFAULT 0",  # согласие клиента на доступ тренера
 }
 
+# Новые колонки supplements. План приёма задаёт сам клиент:
+# 7 = каждый день, N = N раз в неделю.
+_SUPPL_COLUMNS = {
+    "plan_days_per_week": "INTEGER DEFAULT 7",
+}
+
 
 @contextmanager
 def _conn():
@@ -194,6 +200,10 @@ def init_db() -> None:
         for col, ddl in _USER_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+        have = {r["name"] for r in c.execute("PRAGMA table_info(supplements)").fetchall()}
+        for col, ddl in _SUPPL_COLUMNS.items():
+            if col not in have:
+                c.execute(f"ALTER TABLE supplements ADD COLUMN {col} {ddl}")
 
 
 # ---------- настройки ----------
@@ -242,6 +252,22 @@ def update_user(user_id: int, **fields) -> None:
 def all_user_ids() -> list[int]:
     with _conn() as c:
         return [r["user_id"] for r in c.execute("SELECT user_id FROM users").fetchall()]
+
+
+# Таблицы, по которым считаем «первую активность» клиента (режим «всё время»).
+_ACTIVITY_TABLES = ("meals", "water_log", "wellbeing", "workout_log",
+                    "supplement_log", "oura_daily", "lab_results")
+
+
+def first_activity_date(user_id: int) -> str | None:
+    """Самая ранняя дата любой активности клиента. None — данных нет вообще."""
+    parts = " UNION ALL ".join(
+        f"SELECT MIN(date) d FROM {t} WHERE user_id = ?" for t in _ACTIVITY_TABLES
+    )
+    with _conn() as c:
+        row = c.execute(f"SELECT MIN(d) m FROM ({parts})",
+                        tuple([user_id] * len(_ACTIVITY_TABLES))).fetchone()
+    return row["m"] if row and row["m"] else None
 
 
 # ---------- приёмы пищи ----------
@@ -385,11 +411,12 @@ def clients_of_coach(coach_id: int) -> list[dict]:
 
 # ---------- БАДы ----------
 
-def add_supplement(user_id: int, name: str, timing: str) -> int:
+def add_supplement(user_id: int, name: str, timing: str, plan_days_per_week: int = 7) -> int:
+    plan = max(1, min(7, int(plan_days_per_week or 7)))
     with _conn() as c:
         cur = c.execute(
-            "INSERT INTO supplements(user_id, name, timing) VALUES(?,?,?)",
-            (user_id, name.strip()[:80], timing),
+            "INSERT INTO supplements(user_id, name, timing, plan_days_per_week) VALUES(?,?,?,?)",
+            (user_id, name.strip()[:80], timing, plan),
         )
         return cur.lastrowid
 
@@ -438,6 +465,28 @@ def taken_supplements(user_id: int, date: str) -> set[int]:
             (user_id, date),
         ).fetchall()
         return {r["suppl_id"] for r in rows}
+
+
+def supplement_taken_dates(user_id: int, dates: list[str]) -> dict[int, list[str]]:
+    """Даты приёма каждого БАДа внутри окна (по возрастанию)."""
+    if not dates:
+        return {}
+    marks = ",".join("?" for _ in dates)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT DISTINCT suppl_id, date FROM supplement_log "
+            f"WHERE user_id = ? AND date IN ({marks}) ORDER BY date",
+            (user_id, *dates),
+        ).fetchall()
+    out: dict[int, list[str]] = {}
+    for r in rows:
+        out.setdefault(r["suppl_id"], []).append(r["date"])
+    return out
+
+
+def supplement_taken_days(user_id: int, dates: list[str]) -> dict[int, int]:
+    """Сколько различных дней окна БАД был отмечен принятым."""
+    return {sid: len(days) for sid, days in supplement_taken_dates(user_id, dates).items()}
 
 
 # ---------- самочувствие ----------

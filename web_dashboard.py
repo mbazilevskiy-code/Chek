@@ -202,7 +202,64 @@ def _avg(vals):
     return round(sum(vals) / len(vals), 1) if vals else None
 
 
-def client_detail(uid: int, days: int = 7) -> dict:
+# Потолок окна и порог, после которого дневные точки схлопываем в недели.
+MAX_DAYS = 3650
+BUCKET_AFTER_DAYS = 35
+
+
+def resolve_days(uid: int, raw: str | None) -> int:
+    """Сколько дней показывать. «all» — от первой активности клиента."""
+    raw = (raw or "7").strip().lower()
+    if raw in ("all", "всё", "все"):
+        first = db.first_activity_date(uid)
+        if not first:
+            return 7          # данных нет вообще — показываем привычную неделю
+        try:
+            start = datetime.strptime(first, "%Y-%m-%d")
+        except ValueError:
+            return 7
+        return max(1, min((datetime.now() - start).days + 1, MAX_DAYS))
+    try:
+        return max(1, min(int(raw), MAX_DAYS))
+    except ValueError:
+        return 7
+
+
+def _bucket_weekly(series: list[dict], keys) -> list[dict]:
+    """Схлопывает дневной ряд в средние по ISO-неделям.
+
+    На окне в месяцы и годы дневные точки превращаются в шум — по неделям
+    спарклайн снова читается. Плитки при этом считаются по дневным данным.
+    """
+    buckets: dict[tuple, list[dict]] = {}
+    for row in series:
+        try:
+            dt = datetime.strptime(row["date"], "%Y-%m-%d")
+        except (KeyError, TypeError, ValueError):
+            continue
+        year, week, _ = dt.isocalendar()
+        buckets.setdefault((year, week), []).append(row)
+
+    out = []
+    for _, rows in sorted(buckets.items()):
+        first = min(r["date"] for r in rows)
+        item = {
+            "date": first,
+            "label": datetime.strptime(first, "%Y-%m-%d").strftime("%d.%m"),
+            "days": len(rows),
+        }
+        for k in keys:
+            item[k] = _avg([r.get(k) for r in rows])
+        out.append(item)
+    return out
+
+
+_SERIES_KEYS = ("kcal", "protein", "fat", "carbs", "chek", "meals", "water")
+_OURA_KEYS = ("readiness", "sleep_score", "sleep_h", "hrv", "resting_hr",
+              "temp_dev", "activity_score", "steps")
+
+
+def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict:
     """Полный срез клиента для кабинета: еда/вода/тренировки + самочувствие + БАДы + анализы + Oura."""
     s = build_summary(days, uid=uid)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -222,23 +279,47 @@ def client_detail(uid: int, days: int = 7) -> dict:
             "days": len(wb_days),
         }
 
-    # БАДы
+    # БАДы: план приёма против факта за окно
     supps = db.list_supplements(uid)
-    taken = db.taken_supplements(uid, today)
+    taken_today = db.taken_supplements(uid, today)
     supplements = None
     if supps:
+        by_id = db.supplement_taken_dates(uid, dates)
+        rows = []
+        for x in supps:
+            plan = x["plan_days_per_week"] or 7
+            tdates = by_id.get(x["id"], [])
+            rows.append({
+                "id": x["id"],
+                "name": x["name"],
+                "timing": x["timing"],
+                "plan_days_per_week": plan,
+                "planned": int(round(plan / 7 * days)),
+                "taken": len(tdates),
+                "taken_dates": tdates,
+                "today_taken": x["id"] in taken_today,
+            })
         supplements = {
-            "list": [{"name": x["name"], "timing": x["timing"], "taken": x["id"] in taken}
-                     for x in supps],
-            "taken": len(taken), "total": len(supps),
+            "list": rows,
+            "taken": len(taken_today), "total": len(supps),
+            "window_days": days,
+            "planned_total": sum(r["planned"] for r in rows),
+            "taken_total": sum(r["taken"] for r in rows),
         }
 
-    # анализы (последние + тренд к предыдущему)
+    # анализы: только бланки, попавшие в окно; тренд — к предыдущему значению
+    # (оно может лежать и за пределами окна, так и задумано)
     labs = None
-    ldates = db.lab_dates(uid)
+    # Для брифа окно анализов расширяем (labs_days): бланки сдают редко,
+    # и на недельном окне ИИ остался бы без них.
+    labs_start = (datetime.now() - timedelta(days=(labs_days or days) - 1)).strftime("%Y-%m-%d")
+    window_start = min(dates[-1], labs_start)
+    ldates = [d for d in db.lab_dates(uid) if d >= window_start]
     if ldates:
         rows = []
         for m in db.latest_markers(uid):
+            if m["date"] < window_start:
+                continue
             prev = None
             hist = db.marker_history(uid, m["name"])
             prevvals = [h for h in hist if h["date"] < ldates[0] and h["value"] is not None]
@@ -250,23 +331,38 @@ def client_detail(uid: int, days: int = 7) -> dict:
                 "ref_low": m["ref_low"], "ref_high": m["ref_high"], "flag": m["flag"],
                 "prev": prev,
             })
-        rows.sort(key=lambda r: 0 if r["flag"] in ("низко", "высоко") else 1)
-        labs = {"dates": ldates, "last_date": ldates[0], "markers": rows,
-                "abnormal": sum(1 for r in rows if r["flag"] in ("низко", "высоко"))}
+        if rows:
+            rows.sort(key=lambda r: 0 if r["flag"] in ("низко", "высоко") else 1)
+            labs = {"dates": ldates, "last_date": ldates[0], "markers": rows,
+                    "abnormal": sum(1 for r in rows if r["flag"] in ("низко", "высоко"))}
 
-    # Oura (пока не подключено — заглушка на будущее)
+    # Oura за то же окно: ряд по дням + средние за период для плиток
     oura = None
     if hasattr(db, "oura_range"):
         od = db.oura_range(uid, dates)
         if od:
-            series = [od.get(d) for d in reversed(dates)]
-            latest = od.get(max(od))
-            oura = {"series": [{"date": d, **(od.get(d) or {})} for d in reversed(dates)],
-                    "latest": latest, "connected": True}
+            oura = {
+                "series": [{"date": d, **(od.get(d) or {})} for d in reversed(dates)],
+                "latest": od.get(max(od)),
+                "avg": {k: _avg([v.get(k) for v in od.values()]) for k in _OURA_KEYS},
+                "connected": True,
+            }
+
+    # Последняя запись — по дневному ряду, до схлопывания в недели.
+    logged = [x for x in s["series"] if x["meals"] or x["water"] or x["wi"] or x["workout"]]
+
+    bucket = "week" if days > BUCKET_AFTER_DAYS else "day"
+    if bucket == "week":
+        s["series"] = _bucket_weekly(s["series"], _SERIES_KEYS)
+        if oura:
+            oura["series"] = _bucket_weekly(oura["series"], _OURA_KEYS)
 
     s.update({
         "sex": user.get("sex"), "age": user.get("age"), "goal": user.get("goal"),
         "wellbeing": wellbeing, "supplements": supplements, "labs": labs, "oura": oura,
+        "bucket": bucket,
+        "last_activity": logged[-1]["date"] if logged else None,
+        "last_activity_label": logged[-1]["label"] if logged else None,
     })
     return s
 
@@ -309,7 +405,7 @@ def week_data_text(uid: int) -> str:
         lines.append("; ".join(parts) + f". Ел: {dishes}")
     lines.append(f"Дней с записями: {sum(1 for x in s['series'] if x['meals'])}/7.")
 
-    detail = client_detail(uid, 7)
+    detail = client_detail(uid, 7, labs_days=MAX_DAYS)
     wb = detail.get("wellbeing")
     if wb:
         a = wb["avg"]
@@ -358,10 +454,7 @@ async def _coach_api_client(request: web.Request) -> web.Response:
     uid = _client_uid_or_none(request)
     if uid is None:
         return web.json_response({"error": "клиент не найден"}, status=404)
-    try:
-        days = max(1, min(int(request.query.get("days", "7")), 90))
-    except ValueError:
-        days = 7
+    days = resolve_days(uid, request.query.get("days"))
     return web.json_response(client_detail(uid, days))
 
 

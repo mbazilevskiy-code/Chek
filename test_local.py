@@ -499,6 +499,11 @@ def test_client_detail():
     eq(d["oura"]["connected"], True, "Oura отмечена как подключённая")
     eq(len(d["oura"]["series"]), 7, "ряд Oura на 7 дней")
     eq(d["oura"]["latest"]["readiness"], 75, "последняя готовность по Oura")
+    near(d["oura"]["avg"]["readiness"], 71.5, "средняя готовность за окно")
+    eq(d["oura"]["avg"]["sleep_h"], 6.8, "средний сон за окно (с округлением до 0,1)")
+
+    eq(d["last_activity"], TODAY, "последняя запись клиента — сегодня")
+    eq(d["bucket"], "day", "на неделе ряд остаётся дневным")
 
     txt = web_dashboard.week_data_text(CLIENT_UID)
     ok(isinstance(txt, str) and txt.strip(), "текст недели непустой")
@@ -532,6 +537,13 @@ async def _coach_http(cabinet_token: str):
                 ok(data["clients"][0]["flags"], "у клиента проставлен флаг светофора")
             async with s.get(f"{base}/coach/api/client?key={cabinet_token}&uid={CLIENT_UID}") as r:
                 eq(r.status, 200, "карточка клиента — 200")
+            for period in ("1", "30", "365", "all"):
+                url = f"{base}/coach/api/client?key={cabinet_token}&uid={CLIENT_UID}&days={period}"
+                async with s.get(url) as r:
+                    eq(r.status, 200, f"карточка за период {period} — 200")
+                    payload = await r.json()
+                    ok(payload.get("ok"), f"payload за период {period} собран")
+                    ok(payload.get("days", 0) >= 1, f"период {period}: days в ответе")
             async with s.get(f"{base}/coach/api/client?key={cabinet_token}&uid=999999") as r:
                 ok(r.status in (400, 403, 404), "чужой клиент не отдаётся")
             async with s.get(f"{base}/") as r:
@@ -713,6 +725,183 @@ def test_analyzer_meals():
     asyncio.run(_meal_demo())
 
 
+# ------------------------------------- период просмотра, агрегация и адгеренс БАДов
+
+PLAN_UID = 4004     # отдельный клиент под тесты плана приёма
+
+
+def test_supplement_plan():
+    db.ensure_user(PLAN_UID, "Клиент с планом")
+    daily = db.add_supplement(PLAN_UID, "Витамин D", "утром")          # план по умолчанию
+    thrice = db.add_supplement(PLAN_UID, "Магний", "вечером", 3)
+    eq(db.get_supplement(daily)["plan_days_per_week"], 7, "план по умолчанию — каждый день")
+    eq(db.get_supplement(thrice)["plan_days_per_week"], 3, "план «3 раза в неделю» сохранён")
+
+    hi = db.add_supplement(PLAN_UID, "Слишком часто", "", 99)
+    lo = db.add_supplement(PLAN_UID, "Слишком редко", "", -3)
+    eq(db.get_supplement(hi)["plan_days_per_week"], 7, "план больше 7 ужат до 7")
+    eq(db.get_supplement(lo)["plan_days_per_week"], 1, "план меньше 1 поднят до 1")
+    db.deactivate_supplement(PLAN_UID, hi)
+    db.deactivate_supplement(PLAN_UID, lo)
+
+    week = [day(i) for i in range(7)]
+    for i in (0, 1, 2, 4, 6):          # 5 дней из 7 при плане «каждый день»
+        db.toggle_supplement_taken(PLAN_UID, day(i), daily)
+    for i in (0, 1, 3, 4, 5):          # 5 дней при плане 3 — приём сверх плана
+        db.toggle_supplement_taken(PLAN_UID, day(i), thrice)
+
+    counts = db.supplement_taken_days(PLAN_UID, week)
+    eq(counts[daily], 5, "supplement_taken_days: 5 дней приёма")
+    eq(counts[thrice], 5, "supplement_taken_days: 5 дней у второго БАДа")
+    eq(db.supplement_taken_days(PLAN_UID, []), {}, "supplement_taken_days: пустое окно")
+    eq(db.supplement_taken_days(PLAN_UID, [day(3)])[thrice], 1, "окно в один день")
+    dts = db.supplement_taken_dates(PLAN_UID, week)
+    eq(dts[daily][0], day(6), "даты приёма отсортированы по возрастанию")
+    eq(len(dts[daily]), 5, "дат приёма ровно столько же, сколько дней")
+
+
+def test_adherence_payload():
+    d = web_dashboard.client_detail(PLAN_UID, days=7)
+    rows = {r["name"]: r for r in d["supplements"]["list"]}
+    eq(len(rows), 2, "в адгеренсе только активные БАДы")
+
+    eq(rows["Витамин D"]["planned"], 7, "план за неделю при «каждый день» — 7")
+    eq(rows["Витамин D"]["taken"], 5, "принято 5 из 7")
+    eq(rows["Витамин D"]["plan_days_per_week"], 7, "план отдаётся во фронт")
+    eq(len(rows["Витамин D"]["taken_dates"]), 5, "даты приёма в payload — для точек по дням")
+    eq(rows["Витамин D"]["today_taken"], True, "отметка за сегодня отдельно")
+
+    eq(rows["Магний"]["planned"], 3, "план за неделю при «3 раза в неделю» — 3")
+    eq(rows["Магний"]["taken"], 5, "приём сверх плана не обрезается")
+    ok(rows["Магний"]["taken"] > rows["Магний"]["planned"], "5 из 3 отдаётся как есть")
+
+    eq(d["supplements"]["window_days"], 7, "окно в payload БАДов")
+    eq(d["supplements"]["planned_total"], 10, "суммарный план за окно")
+    eq(d["supplements"]["taken_total"], 10, "суммарно принято за окно")
+    eq(d["supplements"]["total"], 2, "всего активных БАДов")
+
+    m = web_dashboard.client_detail(PLAN_UID, days=30)
+    rows30 = {r["name"]: r for r in m["supplements"]["list"]}
+    eq(rows30["Витамин D"]["planned"], 30, "план за 30 дней при «каждый день» — 30")
+    eq(rows30["Магний"]["planned"], 13, "план за 30 дней при 3 раза/нед — 13")
+    eq(rows30["Магний"]["taken"], 5, "факт за 30 дней тот же — принимал только на этой неделе")
+
+    one = web_dashboard.client_detail(PLAN_UID, days=1)
+    rows1 = {r["name"]: r for r in one["supplements"]["list"]}
+    eq(rows1["Витамин D"]["planned"], 1, "план на сегодня при «каждый день» — 1")
+    eq(one["supplements"]["window_days"], 1, "окно в один день")
+
+
+def test_migration_idempotent():
+    import sqlite3
+
+    def suppl_columns():
+        con = sqlite3.connect(os.environ["DB_PATH"])
+        try:
+            return [r[1] for r in con.execute("PRAGMA table_info(supplements)")]
+        finally:
+            con.close()
+
+    before = suppl_columns()
+    eq(before.count("plan_days_per_week"), 1, "колонка плана заведена ровно один раз")
+    kept = len(db.list_supplements(PLAN_UID))
+
+    db.init_db()
+    db.init_db()          # повторная миграция не должна ничего ломать
+    after = suppl_columns()
+    eq(after.count("plan_days_per_week"), 1, "после повторной миграции колонка не дублируется")
+    eq(after, before, "набор колонок supplements не изменился")
+    eq(len(db.list_supplements(PLAN_UID)), kept, "данные БАДов на месте")
+    eq(db.supplement_taken_days(PLAN_UID, [day(i) for i in range(7)])
+       [db.list_supplements(PLAN_UID)[0]["id"]], 5, "отметки приёма пережили миграцию")
+
+
+def test_resolve_days():
+    rd = web_dashboard.resolve_days
+    eq(rd(CLIENT_UID, "1"), 1, "период «сегодня» — 1 день")
+    eq(rd(CLIENT_UID, "7"), 7, "период «неделя» — 7 дней")
+    eq(rd(CLIENT_UID, "30"), 30, "период «месяц» — 30 дней")
+    eq(rd(CLIENT_UID, "365"), 365, "период «год» — 365 дней")
+    eq(rd(CLIENT_UID, None), 7, "без параметра — неделя")
+    eq(rd(CLIENT_UID, "чепуха"), 7, "нечисловой период — неделя")
+    eq(rd(CLIENT_UID, "0"), 1, "минимум — один день")
+    eq(rd(CLIENT_UID, "99999"), web_dashboard.MAX_DAYS, "потолок окна — 3650 дней")
+    eq(web_dashboard.MAX_DAYS, 3650, "потолок поднят с 90 до 3650")
+
+    # «Всё время» — от первой активности клиента
+    eq(db.first_activity_date(CLIENT_UID), day(40), "первая активность — самая ранняя дата")
+    eq(db.first_activity_date(987654), None, "у неизвестного клиента активности нет")
+    eq(rd(CLIENT_UID, "all"), 41, "«всё время» — от первой активности включительно")
+    eq(rd(987654, "all"), 7, "нет данных вообще — фолбэк на неделю")
+
+
+def test_weekly_buckets():
+    rows = [{"date": day(i), "label": "", "kcal": 100 + i, "water": 200} for i in range(14)]
+    b = web_dashboard._bucket_weekly(rows, ("kcal", "water"))
+    ok(2 <= len(b) <= 3, "14 дней схлопываются в 2–3 ISO-недели")
+    ok(all(x["kcal"] is not None for x in b), "среднее по неделе посчитано")
+    ok(all(x["days"] >= 1 for x in b), "в каждой неделе указано число дней")
+    eq(b[0]["date"], min(r["date"] for r in rows[7:]) if len(b) > 1 else b[0]["date"],
+       "недели идут по возрастанию даты")
+    eq(web_dashboard._bucket_weekly([], ("kcal",)), [], "пустой ряд — пустой результат")
+
+    short = web_dashboard.client_detail(CLIENT_UID, days=30)
+    eq(short["bucket"], "day", "30 дней — ещё по дням")
+    eq(len(short["series"]), 30, "30 точек")
+
+    long_ = web_dashboard.client_detail(CLIENT_UID, days=90)
+    eq(long_["bucket"], "week", "90 дней — схлопнуто в недели")
+    ok(12 <= len(long_["series"]) <= 15, "90 дней — примерно 13 недель")
+    ok(all("days" in x for x in long_["series"]), "у каждой недели есть число дней")
+    ok(long_["stats"]["avg_kcal"] > 0, "плитки по-прежнему считаются по дневным данным")
+    if long_["oura"]:
+        eq(len(long_["oura"]["series"]), len(long_["series"]), "ряд Oura схлопнут так же")
+    eq(long_["last_activity"], TODAY, "последняя запись считается до схлопывания")
+
+
+def test_suppl_plan_in_bot():
+    import bot as botmod
+
+    eq(botmod._parse_plan("каждый день"), 7, "«каждый день» → 7")
+    eq(botmod._parse_plan("6 раз в неделю"), 6, "«6 раз в неделю» → 6")
+    eq(botmod._parse_plan("3 раза в неделю"), 3, "«3 раза в неделю» → 3")
+    eq(botmod._parse_plan("1 раз в неделю"), 1, "«1 раз в неделю» → 1")
+    eq(botmod._parse_plan("ежедневно"), 7, "синоним «ежедневно» → 7")
+    eq(botmod._parse_plan("чепуха"), None, "непонятный ответ — не разобрали")
+    eq(botmod._parse_plan(None), None, "пустой ответ — не разобрали")
+
+    names = [h.callback.__name__ for h in botmod.router.message.handlers]
+    ok("add_suppl_plan" in names, "шаг плана приёма зарегистрирован в FSM")
+    ok(names.index("add_suppl_timing") < names.index("add_suppl_plan"),
+       "шаг плана идёт после шага времени приёма")
+
+    txt = botmod.suppl_text(PLAN_UID, TODAY)
+    ok("Витамин D" in txt, "в /supplements есть название добавки")
+    ok("каждый день" in txt, "в /supplements виден план «каждый день»")
+    ok("3 раза в неделю" in txt, "в /supplements виден план «N раз в неделю»")
+    ok("утром" in txt, "в /supplements осталось время приёма")
+
+
+def test_labs_window():
+    db.add_lab_result(PLAN_UID, day(50), "Биохимия", [
+        {"name": "Ферритин", "value": 60.0, "unit": "нг/мл",
+         "ref_low": 30, "ref_high": 400, "flag": "норма"},
+    ])
+    ok(web_dashboard.client_detail(PLAN_UID, days=7)["labs"] is None,
+       "бланк старше окна на неделе не показывается")
+    far = web_dashboard.client_detail(PLAN_UID, days=365)
+    ok(far["labs"] is not None, "на окне в год бланк виден")
+    eq(far["labs"]["last_date"], day(50), "дата бланка внутри окна")
+    eq(len(far["labs"]["dates"]), 1, "в окно попал один бланк")
+
+    # Бриф собирается за неделю, но анализы ему нужны любой давности
+    wide = web_dashboard.client_detail(PLAN_UID, days=7, labs_days=web_dashboard.MAX_DAYS)
+    ok(wide["labs"] is not None, "labs_days расширяет окно анализов")
+    eq(len(wide["series"]), 7, "при этом сам срез остаётся недельным")
+    ok("Анализы" in web_dashboard.week_data_text(PLAN_UID),
+       "старые анализы не выпадают из текста для AI-брифа")
+
+
 # ------------------------------------------------- маршрутизация команд в диалогах
 
 
@@ -827,6 +1016,20 @@ def main() -> int:
     test_client_detail()
     print("- кабинет: HTTP на localhost")
     test_coach_http("cab-key-1")
+    print("- БАДы: план приёма")
+    test_supplement_plan()
+    print("- БАДы: адгеренс за период")
+    test_adherence_payload()
+    print("- миграция plan_days_per_week идемпотентна")
+    test_migration_idempotent()
+    print("- период: 1 / 7 / 30 / 365 / all")
+    test_resolve_days()
+    print("- длинные окна: недельные бакеты")
+    test_weekly_buckets()
+    print("- бот: шаг плана приёма БАДов")
+    test_suppl_plan_in_bot()
+    print("- анализы: только бланки в окне")
+    test_labs_window()
 
     print("- analyzer: извлечение JSON")
     test_extract_json()
