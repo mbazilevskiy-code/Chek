@@ -336,6 +336,38 @@ def meals_for_dates(user_id: int, dates: list[str]) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def meals_detailed(user_id: int, dates: list[str], limit: int = 300) -> list[dict]:
+    """Приёмы пищи за окно с составом и вердиктом Чека — свежие первыми.
+
+    raw_json отдаём как есть: в нём разбивка по компонентам, совет и допущения ИИ.
+    """
+    if not dates:
+        return []
+    marks = ",".join("?" for _ in dates)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT id, date, time, source, dish, grams, kcal, protein, fat, carbs, "
+            f"chek_score, chek_verdict, raw_json FROM meals "
+            f"WHERE user_id = ? AND date IN ({marks}) "
+            f"ORDER BY date DESC, id DESC LIMIT ?",
+            (user_id, *dates, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def meals_count(user_id: int, dates: list[str]) -> int:
+    """Сколько всего приёмов пищи в окне (чтобы честно сказать про обрезку)."""
+    if not dates:
+        return 0
+    marks = ",".join("?" for _ in dates)
+    with _conn() as c:
+        row = c.execute(
+            f"SELECT COUNT(*) n FROM meals WHERE user_id = ? AND date IN ({marks})",
+            (user_id, *dates),
+        ).fetchone()
+        return int(row["n"])
+
+
 def totals_by_date(user_id: int, dates: list[str]) -> dict[str, dict]:
     """Суммы КБЖУ и средний балл Чека по каждой дате из списка."""
     if not dates:

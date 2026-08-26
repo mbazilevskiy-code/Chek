@@ -147,6 +147,33 @@ table.roster{width:100%;border-collapse:collapse;font-size:.92rem;background:var
 .wk b.zero{color:var(--muted)}
 .stale{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
   padding:9px 12px;margin-bottom:11px;color:var(--ink-2);font-size:.84rem}
+/* ---- что ел: дневник по дням с раскрытием состава ---- */
+.food{display:flex;flex-direction:column;gap:8px}
+.food details{border:1px solid var(--line);border-radius:10px;background:var(--surface-2);overflow:hidden}
+.food summary{cursor:pointer;list-style:none}
+.food summary::-webkit-details-marker{display:none}
+.food summary::marker{content:""}
+.food>details>summary{padding:9px 12px;font-size:.88rem;font-weight:650;
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.food>details>summary:hover{background:var(--brand-soft)}
+.food .dsum{color:var(--muted);font-weight:400;font-size:.82rem}
+.food .meal{border:0;border-top:1px solid var(--line);border-radius:0;background:var(--surface)}
+.food .meal>summary{padding:8px 12px;display:flex;gap:9px;align-items:baseline;font-size:.87rem}
+.food .meal>summary:hover{background:var(--surface-2)}
+.food .meal .tm{color:var(--muted);font-variant-numeric:tabular-nums;flex:none;width:40px}
+.food .meal .nm{flex:1;min-width:120px}
+.food .meal .kc{font-variant-numeric:tabular-nums;color:var(--ink-2);flex:none}
+.sc{font-size:.72rem;font-weight:700;border-radius:999px;padding:1px 8px;flex:none;white-space:nowrap}
+.sc.ok{background:var(--ok-bg);color:var(--ok)}
+.sc.warn{background:var(--warn-bg);color:var(--warn)}
+.sc.crit{background:var(--crit-bg);color:var(--crit)}
+.food .body{padding:0 12px 11px 52px;font-size:.85rem;color:var(--ink-2)}
+.food .macro{display:flex;gap:14px;flex-wrap:wrap;margin:2px 0 6px;font-variant-numeric:tabular-nums}
+.food .items{margin:6px 0 0;padding-left:17px}
+.food .items li{margin:1px 0}
+.food .verdict{margin-top:7px;color:var(--ink)}
+.food .tip{margin-top:5px;color:var(--brand)}
+.food .assum{margin-top:5px;font-size:.8rem;color:var(--muted)}
 @media (max-width:920px){.tiles{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}
 </style>
 </head>
@@ -274,6 +301,9 @@ function isoWeekKey(ds){
   return t.getFullYear()+"-W"+String(Math.ceil((((t-jan1)/86400000)+1)/7)).padStart(2,"0");
 }
 const planLabel=(n)=>n>=7?"каждый день":`${n} раз${n>=2&&n<=4?"а":""} в неделю`;
+const plural=(n,one,few,many)=>{const m=n%100,k=n%10;
+  return (m>=11&&m<=14)?many:(k===1?one:(k>=2&&k<=4?few:many));};
+const scoreCls=(v)=>v==null?"":(v>=8?"ok":(v>=5.5?"warn":"crit"));
 
 async function openClient(uid){
   curUid=uid;
@@ -393,6 +423,42 @@ function renderDetail(uid,s,p){
     if(s.wellbeing.latest&&s.wellbeing.latest.note)wbHtml+=`<p class="cap" style="margin-top:10px">Заметка: «${esc(s.wellbeing.latest.note)}»</p>`;
   }else wbHtml=`<div class="nodata">Данных нет — клиент не отмечал самочувствие</div>`;
 
+  // что ел: дневник по дням, приём раскрывается в состав и вердикт
+  let foodHtml,foodHead="";
+  const fd=s.food;
+  if(fd&&fd.days&&fd.days.length){
+    foodHead=`<span class="src">${fd.total} ${plural(fd.total,"запись","записи","записей")}</span>`;
+    foodHtml=`<div class="food">${fd.days.map((d,i)=>`
+      <details${i<3?" open":""}>
+        <summary>${d.label}
+          <span class="dsum">${d.meals.length} ${plural(d.meals.length,"приём","приёма","приёмов")} · ${fmt(d.kcal)} ккал</span>
+          ${d.chek!=null?`<span class="sc ${scoreCls(d.chek)}">Чек ${rub(d.chek)}</span>`:""}</summary>
+        ${d.meals.map(m=>`<details class="meal"><summary>
+            <span class="tm">${esc(m.time||"")}</span>
+            <span class="nm">${esc(m.dish||"Приём пищи")}</span>
+            <span class="kc">${fmt(Math.round(m.kcal||0))} ккал</span>
+            ${m.chek_score!=null?`<span class="sc ${scoreCls(m.chek_score)}">${m.chek_score}</span>`:""}
+          </summary>
+          <div class="body">
+            <div class="macro">
+              <span>Б ${fmt(Math.round(m.protein||0))} г</span>
+              <span>Ж ${fmt(Math.round(m.fat||0))} г</span>
+              <span>У ${fmt(Math.round(m.carbs||0))} г</span>
+              ${m.grams?`<span>${fmt(Math.round(m.grams))} г всего</span>`:""}
+              <span>${m.source==="photo"?"📷 по фото":"✍️ текстом"}</span>
+              ${m.confidence?`<span>точность: ${esc(m.confidence)}</span>`:""}
+            </div>
+            ${m.items&&m.items.length?`<ul class="items">${m.items.map(it=>
+              `<li>${esc(it.name)} — ${fmt(Math.round(it.grams||0))} г, ${fmt(Math.round(it.kcal||0))} ккал</li>`).join("")}</ul>`:""}
+            ${m.verdict?`<div class="verdict">${esc(m.verdict)}</div>`:""}
+            ${m.tip?`<div class="tip">💡 ${esc(m.tip)}</div>`:""}
+            ${m.assumptions?`<div class="assum">Допущения ИИ: ${esc(m.assumptions)}</div>`:""}
+          </div></details>`).join("")}
+      </details>`).join("")}
+      ${fd.truncated?`<p class="cap" style="margin:2px 0 0">Показаны последние ${fd.shown} из ${fd.total} записей за период</p>`:""}
+    </div>`;
+  }else foodHtml=`<div class="nodata">Данных нет — клиент не присылал еду ${cap}</div>`;
+
   // БАДы: план приёма против факта за период
   let supHtml,supHead="",supCap;
   if(s.supplements){
@@ -452,6 +518,8 @@ function renderDetail(uid,s,p){
     <div class="tiles">${tiles.join("")}</div>
     <div class="card"><h3>${isDay?"Сегодня":"Динамика "+cap} <span class="src">${s.oura?'Oura + бот':'бот'}</span></h3>
       <p class="cap">${dynCap}</p>${dynHtml}</div>
+    <div class="card"><h3>🍽 Что ел ${foodHead}</h3>
+      <p class="cap">По дням, свежие сверху · нажми на приём — раскроется состав и вердикт по Чеку</p>${foodHtml}</div>
     <div class="grid2">
       <div class="card"><h3>Самочувствие <span class="src">дневник</span></h3><p class="cap">${isDay?"За сегодня":"Средние "+cap}</p>${wbHtml}</div>
       <div class="card"><h3>БАДы ${supHead}</h3><p class="cap">${supCap}</p>${supHtml}</div>

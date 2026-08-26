@@ -2,6 +2,7 @@
 
 Слушает только 127.0.0.1 — доступен только с этого компьютера.
 """
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -205,6 +206,8 @@ def _avg(vals):
 # Потолок окна и порог, после которого дневные точки схлопываем в недели.
 MAX_DAYS = 3650
 BUCKET_AFTER_DAYS = 35
+# Сколько приёмов пищи отдаём в карточку. Обрезку показываем явно, не молча.
+FOOD_LIMIT = 300
 
 
 def resolve_days(uid: int, raw: str | None) -> int:
@@ -357,6 +360,46 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
                 "connected": True,
             }
 
+    # Что именно ел клиент: по дням, свежие сверху, с составом приёма.
+    rows = db.meals_detailed(uid, dates, FOOD_LIMIT)
+    total_meals = db.meals_count(uid, dates)
+    by_day: dict[str, list] = {}
+    for m in rows:
+        raw = {}
+        if m.get("raw_json"):
+            try:
+                raw = json.loads(m["raw_json"])
+            except (TypeError, ValueError):
+                raw = {}
+        items = raw.get("items")
+        by_day.setdefault(m["date"], []).append({
+            "time": m["time"], "dish": m["dish"], "source": m["source"],
+            "grams": m["grams"], "kcal": m["kcal"], "protein": m["protein"],
+            "fat": m["fat"], "carbs": m["carbs"],
+            "chek_score": m["chek_score"], "verdict": m["chek_verdict"] or "",
+            "tip": raw.get("chek_tip") or "",
+            "assumptions": raw.get("assumptions") or "",
+            "confidence": raw.get("confidence") or "",
+            "items": [{"name": i.get("name"), "grams": i.get("grams"), "kcal": i.get("kcal")}
+                      for i in (items if isinstance(items, list) else [])
+                      if isinstance(i, dict) and i.get("name")],
+        })
+    food_days = []
+    for d in sorted(by_day, reverse=True):
+        ms = sorted(by_day[d], key=lambda x: x["time"] or "")
+        food_days.append({
+            "date": d,
+            "label": datetime.strptime(d, "%Y-%m-%d").strftime("%d.%m"),
+            "kcal": round(sum(x["kcal"] or 0 for x in ms)),
+            "chek": _avg([x["chek_score"] for x in ms]),
+            "meals": ms,
+        })
+    food = {"days": food_days, "shown": len(rows), "total": total_meals,
+            "truncated": total_meals > len(rows), "limit": FOOD_LIMIT}
+    # Полный плоский список приёмов кабинету не нужен — он дублировал бы food
+    # и на окне в год весил бы заметно больше самой карточки.
+    s.pop("meals", None)
+
     # Последняя запись — по дневному ряду, до схлопывания в недели.
     logged = [x for x in s["series"] if x["meals"] or x["water"] or x["wi"] or x["workout"]]
 
@@ -369,7 +412,7 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
     s.update({
         "sex": user.get("sex"), "age": user.get("age"), "goal": user.get("goal"),
         "wellbeing": wellbeing, "supplements": supplements, "labs": labs, "oura": oura,
-        "bucket": bucket,
+        "food": food, "bucket": bucket,
         "last_activity": logged[-1]["date"] if logged else None,
         "last_activity_label": logged[-1]["label"] if logged else None,
     })

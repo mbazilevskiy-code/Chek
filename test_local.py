@@ -859,6 +859,67 @@ def test_weekly_buckets():
     eq(long_["last_activity"], TODAY, "последняя запись считается до схлопывания")
 
 
+def test_food_breakdown():
+    db.add_meal(CLIENT_UID, TODAY, "19:30", "photo", "Курица с гречкой и салатом",
+                450, 620, 48, 18, 60, 8, "цельная еда, хороший баланс",
+                raw={"items": [{"name": "Куриная грудка", "grams": 180, "kcal": 300},
+                               {"name": "Гречка", "grams": 150, "kcal": 220},
+                               {"name": "Салат", "grams": 120, "kcal": 100}],
+                     "chek_tip": "Добавь зелени",
+                     "assumptions": "Масло в салате — примерно чайная ложка",
+                     "confidence": "высокая"})
+
+    eq(db.meals_count(CLIENT_UID, []), 0, "meals_count: пустое окно")
+    eq(db.meals_detailed(CLIENT_UID, [], 10), [], "meals_detailed: пустое окно")
+    eq(db.meals_detailed(CLIENT_UID, [TODAY], 1)[0]["date"], TODAY, "meals_detailed: свежие первыми")
+
+    d = web_dashboard.client_detail(CLIENT_UID, days=7)
+    f = d["food"]
+    ok(f["days"], "дневник еды собран")
+    eq(f["days"][0]["date"], TODAY, "свежий день сверху")
+    eq(f["total"], 3, "всего приёмов за окно")
+    eq(f["truncated"], False, "обрезки нет")
+
+    today_day = f["days"][0]
+    eq(len(today_day["meals"]), 2, "два приёма сегодня")
+    eq(today_day["meals"][0]["time"], "09:00", "приёмы внутри дня отсортированы по времени")
+    eq(today_day["meals"][1]["dish"], "Курица с гречкой и салатом", "название блюда видно")
+    eq(today_day["kcal"], 970, "сумма калорий за день")
+    near(today_day["chek"], 8.5, "средний Чек за день")
+
+    m = today_day["meals"][1]
+    eq(len(m["items"]), 3, "состав приёма разобран из raw_json")
+    eq(m["items"][0]["name"], "Куриная грудка", "компонент состава")
+    eq(m["items"][0]["kcal"], 300, "калории компонента")
+    eq(m["verdict"], "цельная еда, хороший баланс", "вердикт по Чеку в карточке")
+    eq(m["tip"], "Добавь зелени", "совет ИИ")
+    ok(m["assumptions"], "допущения ИИ отдаются")
+    eq(m["confidence"], "высокая", "уверенность ИИ")
+    eq(m["source"], "photo", "источник приёма — фото")
+    eq(m["protein"], 48, "белок приёма")
+    eq(m["chek_score"], 8, "балл Чека по приёму")
+
+    plain = [x for x in today_day["meals"] if x["dish"] == "Омлет с овощами"][0]
+    eq(plain["items"], [], "приём без raw_json — пустой состав, без падения")
+    eq(plain["tip"], "", "приём без raw_json — без совета")
+
+    ok("meals" not in d, "плоский список приёмов убран из карточки — его заменяет food")
+
+    saved = web_dashboard.FOOD_LIMIT
+    web_dashboard.FOOD_LIMIT = 2
+    try:
+        cut = web_dashboard.client_detail(CLIENT_UID, days=7)["food"]
+        eq(cut["shown"], 2, "отдано не больше лимита")
+        eq(cut["total"], 3, "полное число приёмов известно")
+        eq(cut["truncated"], True, "обрезка помечена явно, а не молча")
+    finally:
+        web_dashboard.FOOD_LIMIT = saved
+
+    empty = web_dashboard.client_detail(PLAN_UID, days=7)["food"]
+    eq(empty["days"], [], "клиент без еды — пустой дневник")
+    eq(empty["total"], 0, "и ноль записей")
+
+
 def test_suppl_plan_in_bot():
     import bot as botmod
 
@@ -1043,6 +1104,8 @@ def main() -> int:
     test_resolve_days()
     print("- длинные окна: недельные бакеты")
     test_weekly_buckets()
+    print("- кабинет: что ел, состав приёма")
+    test_food_breakdown()
     print("- бот: шаг плана приёма БАДов")
     test_suppl_plan_in_bot()
     print("- анализы: только бланки в окне")
