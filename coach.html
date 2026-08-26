@@ -145,6 +145,8 @@ table.roster{width:100%;border-collapse:collapse;font-size:.92rem;background:var
 .wk b{font-size:.72rem;font-weight:600;color:var(--ink-2);background:var(--surface-2);
   border:1px solid var(--line);border-radius:6px;padding:1px 7px;font-variant-numeric:tabular-nums}
 .wk b.zero{color:var(--muted)}
+.stale{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
+  padding:9px 12px;margin-bottom:11px;color:var(--ink-2);font-size:.84rem}
 @media (max-width:920px){.tiles{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}
 </style>
 </head>
@@ -421,7 +423,7 @@ function renderDetail(uid,s,p){
   }
 
   // анализы
-  let labHtml;
+  let labHtml,labCap;
   if(s.labs){
     const rows=s.labs.markers.map(m=>{
       const val=m.value_text||(m.value!=null?rub(m.value):"?");
@@ -433,7 +435,15 @@ function renderDetail(uid,s,p){
       return `<tr><td>${esc(m.name)}</td><td class="num">${val} ${esc(m.unit||"")}</td><td>${ref}</td><td>${fl}</td><td class="num">${tr}</td></tr>`;
     }).join("");
     labHtml=`<div class="lab" style="overflow-x:auto"><table><thead><tr><th>Показатель</th><th class="num">Значение</th><th>Норма</th><th>Статус</th><th class="num">Δ к прошлому</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-  }else labHtml=`<div class="nodata">Данных нет — бланков ${cap} не было (клиент присылает боту фото или PDF бланка)</div>`;
+    // бланк старше выбранного периода — показываем, но честно помечаем
+    const stale=s.labs.in_window===false;
+    labCap=stale?`Последний бланк от ${s.labs.last_date} — он старше выбранного периода`
+                :`Бланки ${cap} · динамика к предыдущему значению`;
+    if(stale)labHtml=`<div class="stale">🗓 За период «${p.btn.toLowerCase()}» новых анализов не было — показываю последний, от ${s.labs.last_date}</div>`+labHtml;
+  }else{
+    labHtml=`<div class="nodata">Данных нет — анализы не загружены (клиент присылает боту фото или PDF бланка)</div>`;
+    labCap="Показатели и динамика";
+  }
 
   $("detail").innerHTML=`
     <div class="chead"><h2>${esc(s.name||"Клиент")}</h2>${pills.join("")}</div>
@@ -446,7 +456,7 @@ function renderDetail(uid,s,p){
       <div class="card"><h3>Самочувствие <span class="src">дневник</span></h3><p class="cap">${isDay?"За сегодня":"Средние "+cap}</p>${wbHtml}</div>
       <div class="card"><h3>БАДы ${supHead}</h3><p class="cap">${supCap}</p>${supHtml}</div>
     </div>
-    <div class="card"><h3>Анализы ${s.labs?`<span class="src">${s.labs.dates.length} загр. · ${s.labs.last_date}</span>`:''}</h3><p class="cap">Бланки ${cap} · динамика к предыдущему значению</p>${labHtml}</div>
+    <div class="card"><h3>Анализы ${s.labs?`<span class="src">${s.labs.dates.length} загр. · ${s.labs.last_date}</span>`:''}</h3><p class="cap">${labCap}</p>${labHtml}</div>
     <div class="brief">
       <div class="top">🧠 <b>AI-бриф недели</b></div>
       <p class="cap">Соберёт всё выше в сводку и черновик сообщения клиенту (30–60 сек)</p>

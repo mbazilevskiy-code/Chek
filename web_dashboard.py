@@ -314,11 +314,19 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
     # и на недельном окне ИИ остался бы без них.
     labs_start = (datetime.now() - timedelta(days=(labs_days or days) - 1)).strftime("%Y-%m-%d")
     window_start = min(dates[-1], labs_start)
-    ldates = [d for d in db.lab_dates(uid) if d >= window_start]
+    all_ldates = db.lab_dates(uid)
+    ldates = [d for d in all_ldates if d >= window_start]
+    in_window = bool(ldates)
+    if not ldates and all_ldates:
+        # Анализы сдают раз в несколько месяцев. Прятать последний бланк
+        # только потому, что он старше выбранного периода, — значит скрывать
+        # от тренера реальные данные. Показываем и помечаем, что он старше.
+        ldates = all_ldates[:1]
     if ldates:
+        visible_from = window_start if in_window else ldates[0]
         rows = []
         for m in db.latest_markers(uid):
-            if m["date"] < window_start:
+            if m["date"] < visible_from:
                 continue
             prev = None
             hist = db.marker_history(uid, m["name"])
@@ -334,6 +342,7 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
         if rows:
             rows.sort(key=lambda r: 0 if r["flag"] in ("низко", "высоко") else 1)
             labs = {"dates": ldates, "last_date": ldates[0], "markers": rows,
+                    "in_window": in_window,
                     "abnormal": sum(1 for r in rows if r["flag"] in ("низко", "высоко"))}
 
     # Oura за то же окно: ряд по дням + средние за период для плиток

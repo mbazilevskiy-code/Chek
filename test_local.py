@@ -887,12 +887,29 @@ def test_labs_window():
         {"name": "Ферритин", "value": 60.0, "unit": "нг/мл",
          "ref_low": 30, "ref_high": 400, "flag": "норма"},
     ])
-    ok(web_dashboard.client_detail(PLAN_UID, days=7)["labs"] is None,
-       "бланк старше окна на неделе не показывается")
+    # Бланк старше окна не прячем: анализы сдают раз в несколько месяцев,
+    # иначе блок был бы пустым почти всегда. Показываем и помечаем.
+    week = web_dashboard.client_detail(PLAN_UID, days=7)
+    ok(week["labs"] is not None, "бланк старше окна всё равно показывается")
+    eq(week["labs"]["in_window"], False, "и помечен как старше выбранного периода")
+    eq(week["labs"]["last_date"], day(50), "показан последний бланк")
+    ok(week["labs"]["markers"], "маркеры старого бланка не потерялись")
+
     far = web_dashboard.client_detail(PLAN_UID, days=365)
     ok(far["labs"] is not None, "на окне в год бланк виден")
+    eq(far["labs"]["in_window"], True, "и попадает в окно")
     eq(far["labs"]["last_date"], day(50), "дата бланка внутри окна")
     eq(len(far["labs"]["dates"]), 1, "в окно попал один бланк")
+
+    # Свежий бланк внутри окна помечается как «в окне»
+    eq(web_dashboard.client_detail(CLIENT_UID, days=7)["labs"]["in_window"], True,
+       "сегодняшний бланк — внутри недельного окна")
+
+    # А когда анализов нет вообще — честное «Данных нет»
+    nolabs = 5005
+    db.ensure_user(nolabs, "Без анализов")
+    ok(web_dashboard.client_detail(nolabs, days=365)["labs"] is None,
+       "нет ни одного бланка — блок пустой")
 
     # Бриф собирается за неделю, но анализы ему нужны любой давности
     wide = web_dashboard.client_detail(PLAN_UID, days=7, labs_days=web_dashboard.MAX_DAYS)
