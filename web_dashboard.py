@@ -108,9 +108,9 @@ async def _auth_middleware(request: web.Request, handler):
             return web.Response(
                 status=401,
                 text="Кабинет тренера открывается по персональной ссылке вида:\n"
-                     "http://<адрес-сервера>:%d/coach?key=КЛЮЧ_КАБИНЕТА\n\n"
+                     "%s\n\n"
                      "Ключ выдаётся при подключении тренера (команда /newcoach у владельца)."
-                     % config.DASHBOARD_PORT,
+                     % config.public_url("/coach?key=КЛЮЧ_КАБИНЕТА"),
                 content_type="text/plain",
                 charset="utf-8",
             )
@@ -128,9 +128,9 @@ async def _auth_middleware(request: web.Request, handler):
             return web.Response(
                 status=401,
                 text="Доступ по ключу. Открой ссылку вида:\n"
-                     "http://<адрес-сервера>:%d/?key=ТВОЙ_КЛЮЧ\n\n"
+                     "%s\n\n"
                      "Ключ печатается при деплое и лежит на сервере в .env "
-                     "(строка DASHBOARD_TOKEN)." % config.DASHBOARD_PORT,
+                     "(строка DASHBOARD_TOKEN)." % config.public_url("/?key=ТВОЙ_КЛЮЧ"),
                 content_type="text/plain",
                 charset="utf-8",
             )

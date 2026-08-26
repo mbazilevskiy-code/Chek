@@ -498,13 +498,15 @@ async def cmd_start(message: Message) -> None:
 
     if coach and is_coach_himself(uid, coach):
         username = coach.get("bot_username") or ""
+        cabinet_url = config.public_url(
+            f"/coach?key={coach.get('cabinet_token')}", host="АДРЕС-СЕРВЕРА")
         await message.answer(
             f"👋 Это панель твоего ассистента <b>{html.escape(coach.get('brand') or '')}</b>.\n\n"
             f"🔗 <b>Подключение клиентов:</b> просто отправь им ссылку "
             f"https://t.me/{username} — бот поздоровается от твоего имени и попросит "
             "согласие на доступ к данным.\n\n"
             f"🖥 <b>Твой кабинет</b> (светофор по клиентам, AI-брифы):\n"
-            f"http://АДРЕС-СЕРВЕРА:{config.DASHBOARD_PORT}/coach?key={coach.get('cabinet_token')}\n"
+            f"{cabinet_url}\n"
             "(адрес сервера тот же, что в ссылке дашборда владельца; сохрани в закладки)\n\n"
             "📋 /clients — краткий список клиентов прямо здесь.\n"
             "Кстати, ты можешь пользоваться ботом и как клиент — просто присылай еду."
@@ -642,14 +644,16 @@ async def nc_brand(message: Message, state: FSMContext) -> None:
     except Exception:  # noqa: BLE001
         await message.answer("Такой токен уже добавлен 🤔 Проверь и попробуй /newcoach заново.")
         return
+    cabinet_url = config.public_url(f"/coach?key={cabinet_token}", host="АДРЕС-СЕРВЕРА")
+    addr_hint = "" if config.PUBLIC_BASE_URL else " (вместо АДРЕС-СЕРВЕРА — IP сервера)"
     await message.answer(
         f"✅ Тренер <b>{html.escape(data['name'])}</b> ({html.escape(brand)}) добавлен!\n\n"
         f"🔑 Ключ кабинета: <code>{cabinet_token}</code>\n"
-        f"🖥 Кабинет: http://АДРЕС-СЕРВЕРА:{config.DASHBOARD_PORT}/coach?key={cabinet_token}\n\n"
+        f"🖥 Кабинет: {cabinet_url}\n\n"
         "Сейчас перезапущусь (5 сек) и подхвачу нового бота. Дальше:\n"
         "1. Тренер пишет своему боту /start — бот привяжется к нему.\n"
         "2. Тренер шлёт клиентам ссылку на бота.\n"
-        "3. Кабинет открывается по ссылке выше (вместо АДРЕС-СЕРВЕРА — IP сервера)."
+        f"3. Кабинет открывается по ссылке выше{addr_hint}."
     )
     log.info("Новый тренер добавлен, перезапуск процесса…")
     asyncio.get_running_loop().call_later(2.0, os._exit, 0)
@@ -1836,9 +1840,10 @@ async def main() -> None:
         try:
             dash_runner = await web_dashboard.start_dashboard(config.DASHBOARD_PORT)
             if config.DASHBOARD_TOKEN:
-                print(f"🖥  Дашборд: http://<адрес-этого-сервера>:{config.DASHBOARD_PORT}"
-                      f"/?key={config.DASHBOARD_TOKEN}")
-                print(f"👥 Кабинеты тренеров: /coach?key=<ключ-кабинета> на том же адресе")
+                dash_url = config.public_url(f"/?key={config.DASHBOARD_TOKEN}",
+                                             host="<адрес-этого-сервера>")
+                print(f"🖥  Дашборд: {dash_url}")
+                print("👥 Кабинеты тренеров: /coach?key=<ключ-кабинета> на том же адресе")
             else:
                 print(f"🖥  Дашборд: http://localhost:{config.DASHBOARD_PORT} — открой в браузере.")
         except OSError:

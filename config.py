@@ -56,6 +56,23 @@ try:
 except ValueError:
     DASHBOARD_PORT = 8127
 
+# Публичный адрес бота снаружи, например https://example.com — слэш справа
+# убираем. Пусто — ссылки собираются как раньше, из адреса сервера и порта.
+PUBLIC_BASE_URL = _clean(os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
+
+
+def public_url(path: str = "", host: str = "<адрес-сервера>") -> str:
+    """Публичная ссылка на дашборд или кабинет тренера.
+
+    Задан PUBLIC_BASE_URL — берём его. Иначе прежнее поведение:
+    http://<host>:DASHBOARD_PORT, где host — заглушка или реальный адрес.
+    """
+    if path and not path.startswith("/"):
+        path = "/" + path
+    base = PUBLIC_BASE_URL or f"http://{host}:{DASHBOARD_PORT}"
+    return f"{base}{path}"
+
+
 # --- Oura (кольцо) ---
 OURA_CLIENT_ID = _clean(os.getenv("OURA_CLIENT_ID", ""))
 OURA_CLIENT_SECRET = _clean(os.getenv("OURA_CLIENT_SECRET", ""))
