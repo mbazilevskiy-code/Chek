@@ -713,6 +713,85 @@ def test_analyzer_meals():
     asyncio.run(_meal_demo())
 
 
+# ------------------------------------------------- маршрутизация команд в диалогах
+
+
+async def _routing():
+    """Кто из обработчиков перехватит сообщение — без реальных вызовов Telegram.
+
+    Проверяем не порядок ради порядка, а фактический выбор: aiogram отдаёт
+    сообщение первому обработчику, чьи фильтры прошли.
+    """
+    from datetime import timezone
+
+    from aiogram import Bot
+    from aiogram.types import Chat, Message, User
+
+    import bot as botmod
+
+    fake_bot = Bot("123456789:AAHnTESTtokenTESTtokenTESTtoken1234")
+
+    def msg(text: str) -> Message:
+        return Message(message_id=1, date=datetime.now(timezone.utc),
+                       chat=Chat(id=1, type="private"),
+                       from_user=User(id=1, is_bot=False, first_name="Тест"),
+                       text=text).as_(fake_bot)
+
+    async def who(text: str, raw_state):
+        m = msg(text)
+        for h in botmod.router.message.handlers:
+            try:
+                res = await h.check(m, bot=fake_bot, raw_state=raw_state, state=None,
+                                    event_from_user=m.from_user)
+            except Exception:  # noqa: BLE001
+                continue
+            passed = res[0] if isinstance(res, tuple) else res
+            if passed:
+                return h.callback.__name__
+        return None
+
+    try:
+        eq(await who("/cancel", "NewCoach:token"), "cmd_cancel",
+           "/cancel выходит из шага «токен» диалога /newcoach")
+        eq(await who("/cancel", "NewCoach:name"), "cmd_cancel",
+           "/cancel выходит из шага «имя»")
+        eq(await who("/cancel", "NewCoach:brand"), "cmd_cancel",
+           "/cancel выходит из шага «бренд»")
+        eq(await who("/cancel", "AddSuppl:name"), "cmd_cancel",
+           "/cancel выходит и из диалога добавления БАДа")
+        eq(await who("/cancel", "Profile:age"), "cmd_cancel",
+           "/cancel выходит и из анкеты профиля")
+        eq(await who("/cancel", None), "cmd_cancel",
+           "/cancel вне диалога тоже обрабатывается (ответит «нечего отменять»)")
+
+        eq(await who("/labs", "NewCoach:token"), "nc_ignore_commands",
+           "/labs в диалоге не считается вводом токена")
+        eq(await who("/water", "NewCoach:name"), "nc_ignore_commands",
+           "/water в диалоге не считается именем тренера")
+        eq(await who("/today", "NewCoach:brand"), "nc_ignore_commands",
+           "/today в диалоге не считается брендом")
+
+        eq(await who("123456789:AAEtokenlike", "NewCoach:token"), "nc_token",
+           "обычный текст по-прежнему доходит до шага «токен»")
+        eq(await who("Анна", "NewCoach:name"), "nc_name",
+           "обычный текст доходит до шага «имя»")
+        eq(await who("Анна Фит", "NewCoach:brand"), "nc_brand",
+           "обычный текст доходит до шага «бренд»")
+
+        eq(await who("/labs", None), "cmd_labs", "вне диалога /labs работает как обычно")
+
+        names = [h.callback.__name__ for h in botmod.router.message.handlers]
+        eq(names.index("cmd_cancel"), 0, "/cancel зарегистрирован самым первым")
+        ok(names.index("nc_ignore_commands") < names.index("nc_token"),
+           "заслон от команд стоит раньше шагов диалога")
+    finally:
+        await fake_bot.session.close()
+
+
+def test_routing():
+    asyncio.run(_routing())
+
+
 # ---------------------------------------------------------------- запуск
 
 
@@ -755,6 +834,8 @@ def main() -> int:
     test_normalize()
     print("- analyzer: разбор еды (моки)")
     test_analyzer_meals()
+    print("- bot: /cancel и команды внутри диалогов")
+    test_routing()
 
     if _fails:
         print(f"\nПРОВАЛЕНО: {len(_fails)} из {_checks}")

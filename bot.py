@@ -489,6 +489,17 @@ def coach_greeting(coach: dict, user_name: str) -> str:
     )
 
 
+# /cancel — раньше любых обработчиков состояний: aiogram отдаёт сообщение
+# первому подошедшему, а хендлеры шагов диалогов ловят вообще всё подряд.
+@router.message(Command("cancel"), StateFilter("*"))
+async def cmd_cancel(message: Message, state: FSMContext) -> None:
+    if await state.get_state() is None:
+        await message.answer("Нечего отменять 🙂")
+        return
+    await state.clear()
+    await message.answer("Ок, отменил.", reply_markup=ReplyKeyboardRemove())
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     uid = message.from_user.id
@@ -612,6 +623,16 @@ async def cmd_newcoach(message: Message, state: FSMContext) -> None:
         "1️⃣ Попроси тренера (или сделай сам) создать бота у @BotFather:\n"
         "/newbot → имя (например «Ассистент Анны») → юзернейм (…_bot).\n\n"
         "Пришли сюда <b>токен</b> этого бота (вида 123456:ABC…).\n(отмена — /cancel)"
+    )
+
+
+@router.message(StateFilter(NewCoach.token, NewCoach.name, NewCoach.brand),
+                F.text.startswith("/"))
+async def nc_ignore_commands(message: Message) -> None:
+    """Команды внутри диалога не трактуем как ввод. /cancel перехвачен выше."""
+    await message.answer(
+        "Идёт подключение тренера — другие команды пока подождут. "
+        "Заверши текущий шаг или выйди: /cancel"
     )
 
 
@@ -1559,15 +1580,6 @@ async def cmd_profile(message: Message, state: FSMContext) -> None:
         "Рассчитаем твою дневную норму КБЖУ и воды. 6 коротких вопросов.\n"
         "(отменить — /cancel)\n\n1️⃣ Пол?", reply_markup=SEX_KB,
     )
-
-
-@router.message(Command("cancel"), StateFilter("*"))
-async def cmd_cancel(message: Message, state: FSMContext) -> None:
-    if await state.get_state() is None:
-        await message.answer("Нечего отменять 🙂")
-        return
-    await state.clear()
-    await message.answer("Ок, отменил.", reply_markup=ReplyKeyboardRemove())
 
 
 @router.message(Profile.sex, F.text.in_(["Мужчина", "Женщина"]))
