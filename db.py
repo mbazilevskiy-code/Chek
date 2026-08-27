@@ -236,11 +236,20 @@ _COACH_COLUMNS = {
 def _conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # WAL — режим журнала, через который работает непрерывный бэкап (litestream).
+    # Настройка живёт в самом файле базы, так что это идемпотентно и дёшево.
+    conn.execute("PRAGMA journal_mode=WAL")
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def journal_mode() -> str:
+    """Текущий режим журнала базы — для диагностики и тестов."""
+    with _conn() as c:
+        return str(c.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
 
 def init_db() -> None:

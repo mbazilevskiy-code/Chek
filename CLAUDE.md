@@ -90,8 +90,58 @@ python bot.py               # запустить бота (нужен запол
 дашборд, мульти-тенант «Чек Про», кабинет тренера с AI-брифами, Oura (OAuth + данные).
 
 Дальше по продукту: живой пилот с 1–2 тренерами; возможно — тренды анализов и панель
-«check engine» в кабинете, мобильное PWA. Технический долг: HTTPS для сервера (сейчас http),
-автобэкап базы.
+«check engine» в кабинете, мобильное PWA.
+
+## Бэкап базы
+
+База — главный актив («цифровой двойник» клиента), поэтому бэкап непрерывный.
+
+- SQLite работает в режиме **WAL** (`PRAGMA journal_mode=WAL` в `db.py` → `_conn()`).
+  Без WAL непрерывная репликация невозможна. Схему это не меняет.
+Сейчас работают два уровня, off-site пока не в облаке:
+
+1. **На сервере** — ночной снимок с ротацией на 14 копий: `/opt/chek/backup_db.sh`,
+   запуск из `/etc/cron.d/chek-backup` в 4:00, складывает в `/opt/chek/backups/daily/`.
+   Защищает от порчи и случайного удаления файла, но не от потери сервера.
+2. **Off-site, на компьютер владельца** — `pull_backup.ps1` в корне проекта: просит
+   сервер сделать свежий снимок, забирает его в `~/Documents/chek-backups`, держит
+   30 копий. Запуск: `powershell -ExecutionPolicy Bypass -File pull_backup.ps1`.
+   По расписанию — задача в «Планировщике заданий» Windows.
+
+**litestream** (v0.3.13, `/usr/bin/litestream`, служба `litestream`) установлен, но
+**не запущен**: ждёт реквизитов S3-бакета. Как появятся — кладём их в
+`/etc/litestream.yml` (права 600, владелец root, в git не коммитить; шаблон без
+секретов — `/etc/litestream.yml.example`), затем `systemctl enable --now litestream`.
+Это заменит оба уровня выше непрерывной репликацией.
+
+**Восстановление из ночного снимка** (пока litestream не запущен):
+
+```
+systemctl stop chek-bot
+gunzip -c /opt/chek/backups/daily/food_diary_ГГГГММДД_ЧЧММСС.db.gz > /tmp/restore.db
+sqlite3 /tmp/restore.db "PRAGMA integrity_check; SELECT COUNT(*) FROM users;"
+cp /opt/chek/food_diary.db /opt/chek/food_diary.db.broken
+cp /tmp/restore.db /opt/chek/food_diary.db
+systemctl start chek-bot
+```
+
+**Восстановление через litestream** (когда он будет запущен; боевой файл сначала не трогаем):
+
+```
+systemctl stop chek-bot
+litestream restore -o /tmp/restore_test.db /opt/chek/food_diary.db   # проверить копию
+sqlite3 /tmp/restore_test.db "SELECT COUNT(*) FROM users;"           # убедиться, что данные на месте
+cp /opt/chek/food_diary.db /opt/chek/food_diary.db.broken            # старый файл — в сторону
+litestream restore -o /opt/chek/food_diary.db /opt/chek/food_diary.db
+systemctl start chek-bot
+```
+
+Точка на момент времени: `litestream restore -timestamp 2026-08-27T12:00:00Z -o ...`.
+Список снимков: `litestream snapshots /opt/chek/food_diary.db`.
+
+Ручной снимок перед рискованной правкой:
+`sqlite3 /opt/chek/food_diary.db ".backup '/opt/chek/backups/имя.db'"` —
+именно `.backup`, а не `cp`: копия файла на живой базе может оказаться битой.
 
 ## Журнал решений (кратко)
 

@@ -1,6 +1,9 @@
 # Секреты и данные — НИКОГДА не должны попадать в GitHub
 .env
 *.db
+*.db-wal
+*.db-shm
+*.db.gz
 server.txt
 
 # Служебное

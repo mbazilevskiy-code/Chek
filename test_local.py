@@ -119,6 +119,15 @@ def test_users():
 # ---------------------------------------------------------------- db: еда
 
 
+def test_wal_mode():
+    """WAL нужен непрерывному бэкапу (litestream) и параллельному чтению."""
+    eq(db.journal_mode(), "wal", "база работает в режиме WAL")
+    # Данные в WAL-режиме читаются и пишутся как обычно
+    db.set_setting("wal-проба", "значение")
+    eq(db.get_setting("wal-проба"), "значение", "запись и чтение в WAL работают")
+    ok(os.path.exists(os.environ["DB_PATH"]), "файл базы на месте")
+
+
 def test_meals():
     db.add_meal(UID, TODAY, "09:00", "photo", "Овсянка с ягодами",
                 300, 400, 12, 10, 60, 9, "цельная еда")
@@ -1681,6 +1690,8 @@ def main() -> int:
 
     print("- db: пользователи и настройки")
     test_users()
+    print("- db: режим WAL")
+    test_wal_mode()
     print("- db: еда и суммы за день")
     test_meals()
     print("- db: вода")
