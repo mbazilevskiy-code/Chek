@@ -1028,6 +1028,7 @@ def test_labs_window():
 # ------------- тон общения с клиентом: бот собирает данные, советует тренер
 
 LABS_UID = 7007
+VOICE_UID = 7010
 FAKE_COACH_BOT = 999001
 
 
@@ -1602,6 +1603,154 @@ def test_coach_still_gets_advice():
     ok("ЧЕРНОВИК" in out, "бриф возвращается тренеру целиком")
 
 
+# ------------------------------------------------- голосовой ввод и анонсы
+
+def test_voice_routing():
+    """Голос идёт тем же путём, что и текст; модель при этом не грузим."""
+    import bot as botmod
+    import stt
+
+    names = [h.callback.__name__ for h in botmod.router.message.handlers]
+    ok("on_voice" in names, "обработчик голосовых зарегистрирован")
+    ok(names.index("on_voice") < names.index("lw_description"),
+       "голос перехватывается раньше шагов диалога — иначе шаг проглотил бы его")
+    ok(names.index("cmd_cancel") < names.index("on_voice"), "/cancel по-прежнему первый")
+
+    saved = config.VOICE_ENABLED
+    try:
+        config.VOICE_ENABLED = False
+        eq(stt.enabled(), False, "выключенный голосовой ввод виден модулю")
+        raises(stt.SttUnavailable, lambda: stt.transcribe(b"123"),
+               "с выключенным флагом распознавание не запускается")
+        config.VOICE_ENABLED = True
+        eq(stt.enabled(), True, "включённый флаг виден модулю")
+        eq(stt.transcribe(b""), "", "пустое аудио — пустой текст, без загрузки модели")
+    finally:
+        config.VOICE_ENABLED = saved
+
+    eq(stt._model, None, "модель так и не загружалась в тестах")
+
+
+async def _voice_to(state_name, transcript):
+    """Прогоняем route_transcript и смотрим, куда ушёл распознанный текст."""
+    import bot as botmod
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    storage = MemoryStorage()
+    key = StorageKey(bot_id=1, chat_id=VOICE_UID, user_id=VOICE_UID)
+    state = FSMContext(storage=storage, key=key)
+
+    msg = _FakeMessage(VOICE_UID, 1)
+    if state_name is not None:
+        await state.set_state(state_name)
+        await state.set_data({"date": TODAY, "time": "19:00", "duration": 35,
+                              "kcal": 260, "kcal_source": "estimate"})
+
+    routed = {}
+
+    async def fake_analyze(message, **kw):
+        routed["food"] = kw.get("text")
+
+    saved = botmod.analyze_and_reply
+    botmod.analyze_and_reply = fake_analyze
+    try:
+        await botmod.route_transcript(msg, state, transcript)
+    finally:
+        botmod.analyze_and_reply = saved
+    return routed, msg.sent
+
+
+def test_voice_goes_to_food():
+    db.ensure_user(VOICE_UID, "Голосовой")
+    routed, _ = asyncio.run(_voice_to(None, "съел овсянку с ягодами и кофе"))
+    eq(routed.get("food"), "съел овсянку с ягодами и кофе",
+       "вне диалогов распознанное уходит в анализ еды")
+
+
+def test_voice_goes_to_workout_description():
+    import bot as botmod
+    routed, sent = asyncio.run(
+        _voice_to(botmod.LogWorkout.description, "турник, пять подходов по восемь"))
+    ok("food" not in routed, "в шаге описания тренировки в еду не уходит")
+    w = db.workout_for_date(VOICE_UID, TODAY)
+    ok(w is not None, "тренировка записана")
+    eq(w["description"], "турник, пять подходов по восемь",
+       "распознанное легло в описание тренировки")
+    eq(w["duration_min"], 35, "длительность из диалога сохранилась")
+    ok(any("Записал тренировку" in s for s in sent), "клиент получил подтверждение")
+
+
+def test_voice_inside_other_dialog():
+    import bot as botmod
+    routed, sent = asyncio.run(_voice_to(botmod.Profile.age, "тридцать"))
+    ok("food" not in routed, "в анкете профиля голос не уходит в еду")
+    ok(any("ответь, пожалуйста, текстом" in s for s in sent),
+       "в остальных диалогах просим ответить текстом")
+
+
+def test_announce_plan():
+    import announce
+
+    targets = announce.plan("привет")
+    by_uid = {t["uid"]: t for t in targets}
+
+    ok(CLIENT_UID in by_uid, "клиент с согласием получает анонс")
+    ok(by_uid[CLIENT_UID]["via"].startswith("@"), "клиенту пишет бот его тренера")
+    ok("Чек" not in by_uid[CLIENT_UID]["text"], "текст клиенту нейтральный")
+
+    no_consent = 12121
+    coach_id = db.list_coaches()[0]["id"]
+    db.ensure_user(no_consent, "Без согласия", coach_id=coach_id)
+    db.update_user(no_consent, consent=0)
+    ok(no_consent not in {t["uid"] for t in announce.plan("привет")},
+       "без согласия анонс не уходит")
+
+    ok(all(t["token"] for t in targets), "у каждого получателя есть бот-отправитель")
+    own = announce.plan("клиентам", owner_text="владельцу")
+    for t in own:
+        if t["via"] == "личный бот":
+            eq(t["text"], "владельцу", "владельцу уходит свой текст")
+
+
+async def _announce_run():
+    import announce
+    from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+
+    seen, tries = [], {"n": 0}
+
+    async def sender(token, uid, text):
+        seen.append(uid)
+        if uid == CLIENT_UID:
+            raise TelegramForbiddenError(method=None, message="bot was blocked by the user")
+        if uid == VOICE_UID and tries["n"] == 0:
+            tries["n"] += 1
+            raise TelegramRetryAfter(method=None, message="flood", retry_after=0)
+        return None
+
+    return await announce.run("текст", sender=sender, pause=0)
+
+
+def test_announce_send():
+    import announce
+
+    eq(announce.run.__module__, "announce", "рассылка живёт отдельным скриптом")
+    stats = asyncio.run(_announce_run())
+    ok(stats["planned"] > 0, "получатели найдены")
+    eq(stats["blocked"], 1, "заблокировавший бота пропущен, а не сломал рассылку")
+    ok(stats["sent"] >= 1, "остальным отправлено")
+    eq(stats["failed"], 0, "RetryAfter пережит повторной попыткой")
+
+    dry = asyncio.run(announce.run("текст", dry_run=True))
+    eq(dry["sent"], 0, "dry-run никому не пишет")
+    ok(dry["planned"] > 0, "но получателей считает")
+
+    import bot as botmod
+    src = open(botmod.__file__, encoding="utf-8").read()
+    ok("announce" not in src, "бот не знает про рассылку — она не запустится сама на рестарте")
+
+
 # ------------------------------------------------- маршрутизация команд в диалогах
 
 
@@ -1775,6 +1924,18 @@ def main() -> int:
     test_ai_tips_migration()
     print("- тренер: бриф по-прежнему советует")
     test_coach_still_gets_advice()
+    print("- голос: маршрутизация и выключенный флаг")
+    test_voice_routing()
+    print("- голос: вне диалогов уходит в еду")
+    test_voice_goes_to_food()
+    print("- голос: в шаге описания тренировки")
+    test_voice_goes_to_workout_description()
+    print("- голос: внутри других диалогов")
+    test_voice_inside_other_dialog()
+    print("- анонс: кому уходит")
+    test_announce_plan()
+    print("- анонс: рассылка, блокировки, лимиты")
+    test_announce_send()
     print("- bot: /cancel и команды внутри диалогов")
     test_routing()
 

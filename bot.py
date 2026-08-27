@@ -37,6 +37,7 @@ import config
 import db
 import nutrition
 import oura as oura_mod
+import stt
 import web_dashboard
 from analyzer import DemoModeError, OpenRouterError
 from config import ALLOWED_USER_IDS, TELEGRAM_BOT_TOKEN
@@ -544,6 +545,72 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer("Ок, отменил.", reply_markup=ReplyKeyboardRemove())
+
+
+# Голосовые — раньше обработчиков состояний: у голосового нет текста, и шаги
+# диалогов проглотили бы его молча, не поняв, что это ответ на их вопрос.
+@router.message(F.voice | F.audio)
+async def on_voice(message: Message, state: FSMContext) -> None:
+    """Голосовое → текст, дальше тем же путём, что и напечатанное сообщение."""
+    if not stt.enabled():
+        await message.answer("Голосовой ввод пока не подключён — "
+                             "напиши, пожалуйста, текстом 🙂")
+        return
+
+    media = message.voice or message.audio
+    if (getattr(media, "duration", 0) or 0) > config.VOICE_MAX_SECONDS:
+        await message.answer(
+            f"Голосовое длинновато 🙂 Уложись примерно в {config.VOICE_MAX_SECONDS // 60} мин "
+            "или напиши текстом."
+        )
+        return
+
+    _ensure(message)
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    note = await message.answer("🎙 Слушаю…")
+    try:
+        buf = await message.bot.download(media)
+        # Распознавание блокирующее — уводим в поток, чтобы бот отвечал другим.
+        text = await asyncio.to_thread(stt.transcribe, buf.read())
+    except stt.SttUnavailable:
+        await note.edit_text("Голосовой ввод пока не подключён — "
+                             "напиши, пожалуйста, текстом 🙂")
+        return
+    except Exception:  # noqa: BLE001
+        log.exception("Ошибка распознавания голоса")
+        await note.edit_text("Не расслышал, повтори голосом или текстом 🙂")
+        return
+
+    if not text:
+        await note.edit_text("Не расслышал, повтори голосом или текстом 🙂")
+        return
+
+    await note.edit_text(f"🎙 Распознал: «{html.escape(text)}»")
+    await route_transcript(message, state, text)
+
+
+async def route_transcript(message: Message, state: FSMContext, text: str) -> None:
+    """Распознанный текст уходит туда же, куда ушёл бы напечатанный."""
+    current = await state.get_state()
+
+    if current == LogWorkout.description.state:
+        await save_workout_description(message, state, text)
+        return
+
+    if current == Feel.note.state:
+        date, _ = now_date_time()
+        reply = await _save_feel(message.from_user.id, date, state, text[:500] or None)
+        await message.answer(reply)
+        return
+
+    if current is not None:
+        # В остальных диалогах ждём конкретный ответ (кнопку, число, токен) —
+        # голосом на них не ответишь, поэтому не гадаем и не пишем это в еду.
+        await message.answer("Сейчас идёт диалог — ответь, пожалуйста, текстом "
+                             "или выйди: /cancel")
+        return
+
+    await analyze_and_reply(message, text=text, source="text")
 
 
 @router.message(CommandStart())
@@ -1150,7 +1217,12 @@ async def lw_duration(message: Message, state: FSMContext) -> None:
 
 @router.message(LogWorkout.description)
 async def lw_description(message: Message, state: FSMContext) -> None:
-    raw = (message.text or "").strip()
+    await save_workout_description(message, state, (message.text or "").strip())
+
+
+async def save_workout_description(message: Message, state: FSMContext, raw: str) -> None:
+    """Финал записи тренировки. Отдельно от хендлера — сюда же приходит голос."""
+    raw = (raw or "").strip()
     desc = "" if raw in ("-", "—", "нет") else raw[:500]
     data = await state.get_data()
     await state.clear()

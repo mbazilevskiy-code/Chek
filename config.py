@@ -73,6 +73,18 @@ def public_url(path: str = "", host: str = "<адрес-сервера>") -> str
     return f"{base}{path}"
 
 
+# --- Голосовой ввод (faster-whisper) ---
+# По умолчанию выключен: пока модель не развёрнута на машине, бот вежливо
+# просит написать текстом вместо того, чтобы падать.
+VOICE_ENABLED = os.getenv("VOICE_ENABLED", "off").strip().lower() in ("on", "1", "true", "да")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium").strip() or "medium"
+WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE", "int8").strip() or "int8"
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ru").strip() or "ru"
+try:
+    VOICE_MAX_SECONDS = int(os.getenv("VOICE_MAX_SECONDS", "180"))
+except ValueError:
+    VOICE_MAX_SECONDS = 180
+
 # --- Oura (кольцо) ---
 OURA_CLIENT_ID = _clean(os.getenv("OURA_CLIENT_ID", ""))
 OURA_CLIENT_SECRET = _clean(os.getenv("OURA_CLIENT_SECRET", ""))
