@@ -232,7 +232,8 @@ WATER_KB = ikb([
     [("+250 мл", "water:add:250"), ("+500 мл", "water:add:500")],
     [("↺ Сбросить сегодня", "water:reset")],
 ])
-WORKOUT_KB = ikb([[("✅ Сделал", "workout:done"), ("⏭ Пропустил", "workout:skip")]])
+WORKOUT_KB = ikb([[("✅ Сделал", "workout:done"), ("⏭ Не тренировался", "workout:skip")]])
+WORKOUT_NUDGE_KB = ikb([[("🏋️ Записать тренировку", "workout:log")]])
 WI_KB = ikb([[("🧘 Working In сделал", "habit:wi")]])
 
 
@@ -279,9 +280,9 @@ def day_extras_lines(uid: int, date: str, user: dict | None) -> list[str]:
     if wo:
         lines.append("🏋️ Тренировка: " + ("✅ сделана" if wo["status"] == "done" else "⏭ пропущена"))
     elif plan_today:
-        lines.append("🏋️ Тренировка: сегодня по плану — программа: /train")
+        lines.append("🏋️ Тренировка: сегодня по плану — записать: /train")
     else:
-        lines.append("🏋️ Тренировка: не запланирована (внепланово — /train)")
+        lines.append("🏋️ Тренировка: не записана (записать — /train)")
     supps = db.list_supplements(uid)
     if supps:
         taken = db.taken_supplements(uid, date)
@@ -491,8 +492,8 @@ HELP_TEXT = (
     "🍽 <b>Еда</b> — пришли фото или напиши текстом («2 яйца, тост с маслом, кофе»): "
     "посчитаю КБЖУ и запишу в дневник. Подпись к фото уточняет расчёт.\n"
     "💧 <b>Вода</b> — напиши «вода 300» или открой /water\n"
-    "🏋️ <b>Тренировки</b> — /train программа на сегодня, /plan расписание "
-    "(<code>/plan пн,ср,пт 18:00</code>), отметки о выполнении\n"
+    "🏋️ <b>Тренировки</b> — /train записать сделанную (время, длительность, что делал), "
+    "/plan расписание-напоминания (<code>/plan пн,ср,пт 18:00</code>)\n"
     "💊 <b>БАДы</b> — /bad: что принимаешь, план приёма и отметки\n"
     "😌 <b>Самочувствие</b> — /feel: энергия, стресс, настроение\n"
     "🩸 <b>Анализы</b> — пришли фото или PDF бланка, /labs покажет показатели и динамику\n"
@@ -520,7 +521,7 @@ def coach_greeting(coach: dict, user_name: str) -> str:
         "Помогаю вести дневник между вашими встречами. Вот что я умею:\n\n"
         "🍽 <b>Еда</b> — фото или текстом, посчитаю КБЖУ\n"
         "💧 <b>Вода</b> — напиши сколько, или /water\n"
-        "🏋️ <b>Тренировки</b> — /train, /plan, отметки о выполнении\n"
+        "🏋️ <b>Тренировки</b> — /train записать сделанную, /plan расписание\n"
         "💊 <b>БАДы</b> — /bad: что принимаешь и отметки приёма\n"
         "😌 <b>Самочувствие</b> — /feel: энергия, сон, стресс, настроение\n"
         "🩸 <b>Анализы</b> — пришли фото или PDF бланка (/labs)\n"
@@ -960,60 +961,135 @@ async def cb_habit_wi(cb: CallbackQuery) -> None:
 
 # ---------------------------------------------------------------- тренировки
 
+class LogWorkout(StatesGroup):
+    when = State()
+    duration = State()
+    description = State()
+
+
+TRAIN_ASK = "🏋️ <b>Записать тренировку?</b>"
+
+
+def _parse_hhmm(text: str | None) -> str | None:
+    """«18:30», «18.30», «1830» → 18:30. «сейчас» или пусто — текущее время."""
+    t = (text or "").strip().lower()
+    if t in ("", "сейчас", "now"):
+        return now_date_time()[1]
+    m = re.fullmatch(r"(\d{1,2})[:.\s-]?(\d{2})", t)
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    return f"{h:02d}:{mi:02d}" if h <= 23 and mi <= 59 else None
+
+
+def _parse_duration(text: str | None) -> int | None:
+    """«40», «40 мин», «1 час», «1.5 часа», «1 ч 20» → минуты."""
+    t = (text or "").strip().lower().replace(",", ".")
+    if not t:
+        return None
+    hours = re.search(r"(\d+(?:\.\d+)?)\s*(?:ч|час)", t)
+    mins = re.search(r"(\d+)\s*(?:м|мин)", t)
+    total = 0.0
+    if hours:
+        total += float(hours.group(1)) * 60
+        if not mins:                       # «1 ч 20» — хвостовое число это минуты
+            rest = re.search(r"(\d+)", t[hours.end():])
+            if rest:
+                total += int(rest.group(1))
+    if mins:
+        total += int(mins.group(1))
+    if not hours and not mins:
+        m = re.fullmatch(r"(\d+(?:\.\d+)?)", t)
+        if not m:
+            return None
+        total = float(m.group(1))
+    total = int(round(total))
+    return total if 1 <= total <= 600 else None
+
+
 @router.message(Command("train"))
-async def cmd_train(message: Message) -> None:
-    uid = message.from_user.id
-    date, _ = now_date_time()
+async def cmd_train(message: Message, state: FSMContext) -> None:
+    """Тренировку не придумываем, а фиксируем: её задаёт тренер, не бот."""
     _ensure(message)
-    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    note = await message.answer("🏋️ Составляю тренировку по Чеку (турник/брусья)…")
-
-    profile = db.get_user(uid)
-    ctx_parts = []
-    dow = datetime.now().weekday()
-    if any(p["dow"] == dow for p in db.get_workout_plan(uid)):
-        ctx_parts.append("Сегодня тренировка по расписанию.")
-    days = last_dates(14)[1:]
-    workouts = db.workouts_by_date(uid, days)
-    done_days = [d for d, s in workouts.items() if s == "done"]
-    if done_days:
-        last_done = max(done_days)
-        delta = (datetime.now() - datetime.strptime(last_done, "%Y-%m-%d")).days
-        ctx_parts.append(f"Последняя выполненная тренировка была {delta} дн. назад.")
-    else:
-        ctx_parts.append("Недавних тренировок не записано — начни умеренно.")
-
-    try:
-        text = await analyzer.generate_workout(profile, " ".join(ctx_parts),
-                                               with_tips=show_advice(message.bot.id))
-    except DemoModeError:
-        await note.edit_text(DEMO_HOWTO)
-        return
-    except Exception as e:  # noqa: BLE001
-        log.exception("Ошибка генерации тренировки")
-        await note.edit_text(_error_reply(e))
-        return
-
-    body = html.escape(text.strip())[:3800]
-    await note.edit_text(body + "\n\nКак закончишь — отметь:", reply_markup=WORKOUT_KB)
+    await state.clear()
+    await message.answer(TRAIN_ASK, reply_markup=WORKOUT_KB)
 
 
 @router.callback_query(F.data.startswith("workout:"))
-async def cb_workout(cb: CallbackQuery) -> None:
+async def cb_workout(cb: CallbackQuery, state: FSMContext) -> None:
     uid = cb.from_user.id
     date, time_ = now_date_time()
-    status = "done" if cb.data.endswith("done") else "skipped"
-    db.add_workout_log(uid, date, time_, status, note="train")
-    await cb.answer("Записал 💪" if status == "done" else "Ок, в другой раз")
+    action = cb.data.split(":")[1]
+
+    if action == "log":                    # кнопка из напоминания
+        await cb.answer()
+        await cb.message.answer(TRAIN_ASK, reply_markup=WORKOUT_KB)
+        return
+
     try:
         await cb.message.edit_reply_markup(reply_markup=None)
     except TelegramBadRequest:
         pass
-    # Подтверждение факта, без наставлений: их даёт тренер.
-    if status == "done":
-        await cb.message.answer("🏋️ Тренировка записана — ✅")
-    else:
-        await cb.message.answer("⏭ Отметил пропуск 🙂")
+
+    if action == "skip":
+        db.add_workout_log(uid, date, time_, "skipped", note="train")
+        await cb.answer("Записал")
+        await cb.message.answer("⏭ Отметил: сегодня не тренировался 🙂")
+        return
+
+    await cb.answer()
+    await state.set_state(LogWorkout.when)
+    await state.update_data(date=date)
+    await cb.message.answer(
+        "🕒 Во сколько тренировался? Например <code>18:30</code>, "
+        "или напиши «сейчас».\n(отмена — /cancel)"
+    )
+
+
+@router.message(StateFilter(LogWorkout.when, LogWorkout.duration, LogWorkout.description),
+                F.text.startswith("/"))
+async def lw_ignore_commands(message: Message) -> None:
+    """Команды внутри записи тренировки не считаем ответом. /cancel перехвачен выше."""
+    await message.answer("Записываю тренировку — другие команды пока подождут. "
+                         "Ответь на вопрос или выйди: /cancel")
+
+
+@router.message(LogWorkout.when)
+async def lw_when(message: Message, state: FSMContext) -> None:
+    hhmm = _parse_hhmm(message.text)
+    if hhmm is None:
+        await message.answer("Не разобрал время 🤔 Напиши как <code>18:30</code> или «сейчас».")
+        return
+    await state.update_data(time=hhmm)
+    await state.set_state(LogWorkout.duration)
+    await message.answer("⏱ Сколько длилась? Например <code>40</code>, «40 мин» или «1 час».")
+
+
+@router.message(LogWorkout.duration)
+async def lw_duration(message: Message, state: FSMContext) -> None:
+    minutes = _parse_duration(message.text)
+    if minutes is None:
+        await message.answer("Не разобрал длительность 🤔 Напиши минуты числом "
+                             "(<code>40</code>) или «1 час 20 мин».")
+        return
+    await state.update_data(duration=minutes)
+    await state.set_state(LogWorkout.description)
+    await message.answer("✍️ Опиши тренировку: что делал, подходы, ощущения.\n"
+                         "Поставь «-», если без описания.")
+
+
+@router.message(LogWorkout.description)
+async def lw_description(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    desc = "" if raw in ("-", "—", "нет") else raw[:500]
+    data = await state.get_data()
+    await state.clear()
+    db.add_workout_log(message.from_user.id, data["date"], data["time"], "done",
+                       note="train", duration_min=data["duration"], description=desc)
+    tail = f": {html.escape(desc)}" if desc else ""
+    await message.answer(
+        f"🏋️ Записал тренировку в {data['time']}, {data['duration']} мин{tail}"
+    )
 
 
 def _parse_plan_args(args: str) -> list[tuple[int, str]] | None:
@@ -1158,9 +1234,9 @@ async def reminder_loop() -> None:
                     if p["dow"] == dow and p["time"] == hm and _fire_once(uid, date, f"wo{p['id']}"):
                         await bot.send_message(
                             uid,
-                            "🏋️ Время тренировки (турник/брусья)!\n"
-                            "Программа на сегодня — /train. Как закончишь, отметь:",
-                            reply_markup=WORKOUT_KB,
+                            "🏋️ По расписанию сегодня тренировка.\n"
+                            "Как закончишь — запиши её:",
+                            reply_markup=WORKOUT_NUDGE_KB,
                         )
                 ev = user.get("evening_time") or "21:00"
                 if ev == hm and _fire_once(uid, date, "evening"):
@@ -1914,7 +1990,7 @@ def _check_env() -> list[str]:
 CLIENT_COMMANDS = [
     BotCommand(command="today", description="Весь день: еда, вода, тренировка"),
     BotCommand(command="week", description="Последние 7 дней"),
-    BotCommand(command="train", description="Тренировка на сегодня (турник/брусья)"),
+    BotCommand(command="train", description="Записать тренировку"),
     BotCommand(command="plan", description="Расписание тренировок"),
     BotCommand(command="water", description="Вода за сегодня"),
     BotCommand(command="supplements", description="БАДы и добавки"),

@@ -1161,6 +1161,81 @@ def test_onboarding_lists_features():
     ok("cb_consent_no" in names, "обработчик отказа на месте")
 
 
+WO_UID = 8008
+
+
+def test_workout_log():
+    """Тренировку не генерируем, а фиксируем со слов клиента."""
+    import bot as botmod
+
+    eq(botmod._parse_hhmm("18:30"), "18:30", "время «18:30»")
+    eq(botmod._parse_hhmm("9.05"), "09:05", "время «9.05» с ведущим нулём")
+    eq(botmod._parse_hhmm("1830"), "18:30", "время «1830»")
+    ok(botmod._parse_hhmm("сейчас") is not None, "«сейчас» — текущее время")
+    ok(botmod._parse_hhmm("") is not None, "пусто — текущее время")
+    eq(botmod._parse_hhmm("25:00"), None, "невалидные часы не проходят")
+    eq(botmod._parse_hhmm("чепуха"), None, "мусор во времени не проходит")
+
+    eq(botmod._parse_duration("40"), 40, "«40» → 40 мин")
+    eq(botmod._parse_duration("40 мин"), 40, "«40 мин» → 40")
+    eq(botmod._parse_duration("1 час"), 60, "«1 час» → 60")
+    eq(botmod._parse_duration("1.5 часа"), 90, "«1.5 часа» → 90")
+    eq(botmod._parse_duration("1 ч 20"), 80, "«1 ч 20» → 80")
+    eq(botmod._parse_duration("1 час 20 мин"), 80, "«1 час 20 мин» → 80")
+    eq(botmod._parse_duration("чепуха"), None, "мусор в длительности не проходит")
+    eq(botmod._parse_duration("0"), None, "ноль минут не принимаем")
+    eq(botmod._parse_duration("999"), None, "неправдоподобную длительность не принимаем")
+
+    db.add_workout_log(WO_UID, TODAY, "18:30", "done", note="train", duration_min=40,
+                       description="турник: 5х8 подтягиваний, брусья 4х10")
+    w = db.workout_for_date(WO_UID, TODAY)
+    eq(w["status"], "done", "статус сделанной тренировки")
+    eq(w["time"], "18:30", "время сохранено")
+    eq(w["duration_min"], 40, "длительность сохранена")
+    ok("подтягиваний" in w["description"], "описание сохранено")
+
+    db.add_workout_log(WO_UID, day(1), "20:00", "skipped", note="train")
+    prev = db.workouts_by_date(WO_UID, [TODAY, day(1)])
+    eq(prev[TODAY], "done", "светофор: тренировка сделана")
+    eq(prev[day(1)], "skipped", "светофор: не тренировался")
+    eq(db.workout_for_date(WO_UID, day(1))["duration_min"], None,
+       "у пропуска длительности нет")
+
+    det = db.workouts_detailed(WO_UID, [TODAY, day(1)])
+    eq(len(det), 2, "обе записи в выборке")
+    eq(det[0]["date"], TODAY, "свежие первыми")
+    eq(db.workouts_detailed(WO_UID, []), [], "пустое окно — пусто")
+
+    names = [h.callback.__name__ for h in botmod.router.message.handlers]
+    for n in ("lw_when", "lw_duration", "lw_description", "lw_ignore_commands"):
+        ok(n in names, f"шаг записи тренировки зарегистрирован: {n}")
+    ok(names.index("cmd_cancel") < names.index("lw_when"), "/cancel раньше шагов записи")
+    ok(names.index("lw_ignore_commands") < names.index("lw_when"),
+       "заслон от команд раньше шагов записи")
+
+
+def test_workouts_in_cabinet():
+    db.add_workout_log(CLIENT_UID, day(2), "07:30", "done", note="train",
+                       duration_min=55, description="брусья и пресс")
+    d = web_dashboard.client_detail(CLIENT_UID, days=7)
+    w = d["workouts"]
+    ok(w is not None, "блок тренировок в карточке клиента")
+    eq(w["done"], 2, "две сделанные тренировки за неделю")
+    eq(w["minutes"], 55, "суммарные минуты — по заполненным записям")
+
+    byd = {x["date"]: x for x in w["list"]}
+    eq(byd[day(2)]["duration_min"], 55, "длительность доехала до тренера")
+    eq(byd[day(2)]["description"], "брусья и пресс", "описание доехало до тренера")
+    eq(byd[day(2)]["time"], "07:30", "время доехало до тренера")
+
+    txt = web_dashboard.week_data_text(CLIENT_UID)
+    ok("55 мин" in txt, "в брифе тренеру есть длительность тренировки")
+    ok("брусья и пресс" in txt, "в брифе тренеру есть описание тренировки")
+
+    empty = web_dashboard.client_detail(PLAN_UID, days=7)["workouts"]
+    ok(empty is None, "у клиента без тренировок блока нет")
+
+
 def test_ai_tips_toggle():
     """Тренер может вернуть боту право советовать клиенту — флагом coaches.ai_tips."""
     import bot as botmod
@@ -1239,13 +1314,9 @@ def test_coach_still_gets_advice():
        "в брифе тренеру остался черновик сообщения клиенту")
     ok("НА ЧТО ОБРАТИТЬ ВНИМАНИЕ" in analyzer.BRIEF_SYSTEM,
        "в брифе тренеру остались пункты внимания")
-    ok("Не давай советов" in analyzer.workout_system(False),
-       "без флага из тренировки убраны советы по технике и восстановлению")
-    ok("совет по технике" in analyzer.workout_system(True),
-       "с флагом пункт с советом в тренировке возвращается")
-    for mode in (True, False):
-        ok("{{TIPS}}" not in analyzer.workout_system(mode),
-           f"плейсхолдер промпта подставлен (with_tips={mode})")
+    ok(not hasattr(analyzer, "generate_workout"),
+       "бот больше не придумывает тренировки — их задаёт тренер")
+    ok(not hasattr(analyzer, "WORKOUT_SYSTEM"), "промпт генерации тренировок удалён")
 
     captured = {}
 
@@ -1416,6 +1487,10 @@ def main() -> int:
     test_client_labs_confirmation()
     print("- онбординг: приветствие и /help со всеми функциями")
     test_onboarding_lists_features()
+    print("- тренировки: лог вместо генерации")
+    test_workout_log()
+    print("- тренировки: длительность и описание тренеру")
+    test_workouts_in_cabinet()
     print("- переключатель /aitips")
     test_ai_tips_toggle()
     print("- миграция ai_tips идемпотентна")

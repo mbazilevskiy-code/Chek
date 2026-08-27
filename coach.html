@@ -423,6 +423,24 @@ function renderDetail(uid,s,p){
     if(s.wellbeing.latest&&s.wellbeing.latest.note)wbHtml+=`<p class="cap" style="margin-top:10px">Заметка: «${esc(s.wellbeing.latest.note)}»</p>`;
   }else wbHtml=`<div class="nodata">Данных нет — клиент не отмечал самочувствие</div>`;
 
+  // тренировки: клиент фиксирует их сам — показываем как есть
+  let woHtml,woHead="";
+  const wo=s.workouts;
+  if(wo&&wo.list.length){
+    const h=Math.floor(wo.minutes/60),mm=wo.minutes%60;
+    woHead=`<span class="src">${wo.done} ${plural(wo.done,"тренировка","тренировки","тренировок")}`
+      +(wo.minutes?` · ${h?h+" ч ":""}${mm?mm+" мин":""}`:"")+`</span>`;
+    woHtml=`<div class="supp">${wo.list.map(w=>{
+      const done=w.status==="done";
+      const dur=w.duration_min?` · ${w.duration_min} мин`:"";
+      const day=new Date(w.date+"T00:00:00").toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"});
+      return `<div class="supp-row">
+        <span class="box ${done?'on':'off'}">${done?'✓':'—'}</span>
+        <span>${day}${done&&w.time?" · "+esc(w.time):""}${dur}${w.description?" · "+esc(w.description):""}</span>
+        ${done?"":'<span class="tm">не тренировался</span>'}</div>`;
+    }).join("")}</div>`;
+  }else woHtml=`<div class="nodata">Данных нет — клиент не записывал тренировки ${cap}</div>`;
+
   // что ел: дневник по дням, приём раскрывается в состав и вердикт
   let foodHtml,foodHead="";
   const fd=s.food;
@@ -518,6 +536,8 @@ function renderDetail(uid,s,p){
     <div class="tiles">${tiles.join("")}</div>
     <div class="card"><h3>${isDay?"Сегодня":"Динамика "+cap} <span class="src">${s.oura?'Oura + бот':'бот'}</span></h3>
       <p class="cap">${dynCap}</p>${dynHtml}</div>
+    <div class="card"><h3>🏋️ Тренировки ${woHead}</h3>
+      <p class="cap">Что клиент записал сам: время, длительность, что делал</p>${woHtml}</div>
     <div class="card"><h3>🍽 Что ел ${foodHead}</h3>
       <p class="cap">По дням, свежие сверху · нажми на приём — раскроется состав и вердикт по Чеку</p>${foodHtml}</div>
     <div class="grid2">

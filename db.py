@@ -181,6 +181,12 @@ _SUPPL_COLUMNS = {
     "plan_days_per_week": "INTEGER DEFAULT 7",
 }
 
+# Новые колонки workout_log: тренировку не генерируем, а фиксируем со слов клиента.
+_WORKOUT_COLUMNS = {
+    "duration_min": "INTEGER",
+    "description": "TEXT",
+}
+
 # Новые колонки coaches. По умолчанию бот тренера клиенту не советует
 # (см. журнал решений в CLAUDE.md); тренер может включить подсказки себе.
 _COACH_COLUMNS = {
@@ -214,6 +220,10 @@ def init_db() -> None:
         for col, ddl in _COACH_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE coaches ADD COLUMN {col} {ddl}")
+        have = {r["name"] for r in c.execute("PRAGMA table_info(workout_log)").fetchall()}
+        for col, ddl in _WORKOUT_COLUMNS.items():
+            if col not in have:
+                c.execute(f"ALTER TABLE workout_log ADD COLUMN {col} {ddl}")
 
 
 # ---------- настройки ----------
@@ -807,12 +817,29 @@ def get_workout_plan(user_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def add_workout_log(user_id: int, date: str, time: str, status: str, note: str = "") -> None:
+def add_workout_log(user_id: int, date: str, time: str, status: str, note: str = "",
+                    duration_min: int | None = None, description: str = "") -> None:
     with _conn() as c:
         c.execute(
-            "INSERT INTO workout_log(user_id, date, time, status, note) VALUES(?,?,?,?,?)",
-            (user_id, date, time, status, note),
+            "INSERT INTO workout_log(user_id, date, time, status, note, duration_min, "
+            "description) VALUES(?,?,?,?,?,?,?)",
+            (user_id, date, time, status, note, duration_min, (description or "").strip()[:500]),
         )
+
+
+def workouts_detailed(user_id: int, dates: list[str], limit: int = 200) -> list[dict]:
+    """Записанные тренировки за окно — свежие первыми, с длительностью и описанием."""
+    if not dates:
+        return []
+    marks = ",".join("?" for _ in dates)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT date, time, status, duration_min, description FROM workout_log "
+            f"WHERE user_id = ? AND date IN ({marks}) "
+            f"ORDER BY date DESC, id DESC LIMIT ?",
+            (user_id, *dates, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def workout_for_date(user_id: int, date: str) -> dict | None:

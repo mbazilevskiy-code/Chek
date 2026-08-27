@@ -400,6 +400,19 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
     # и на окне в год весил бы заметно больше самой карточки.
     s.pop("meals", None)
 
+    # Тренировки: тренеру важен не только факт, но и что именно клиент делал.
+    wlog = db.workouts_detailed(uid, dates)
+    workouts = None
+    if wlog:
+        workouts = {
+            "list": [{"date": w["date"], "time": w["time"], "status": w["status"],
+                      "duration_min": w["duration_min"],
+                      "description": w["description"] or ""} for w in wlog],
+            "done": sum(1 for w in wlog if w["status"] == "done"),
+            "skipped": sum(1 for w in wlog if w["status"] != "done"),
+            "minutes": sum(w["duration_min"] or 0 for w in wlog if w["status"] == "done"),
+        }
+
     # Последняя запись — по дневному ряду, до схлопывания в недели.
     logged = [x for x in s["series"] if x["meals"] or x["water"] or x["wi"] or x["workout"]]
 
@@ -412,7 +425,7 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
     s.update({
         "sex": user.get("sex"), "age": user.get("age"), "goal": user.get("goal"),
         "wellbeing": wellbeing, "supplements": supplements, "labs": labs, "oura": oura,
-        "food": food, "bucket": bucket,
+        "food": food, "workouts": workouts, "bucket": bucket,
         "last_activity": logged[-1]["date"] if logged else None,
         "last_activity_label": logged[-1]["label"] if logged else None,
     })
@@ -442,6 +455,11 @@ def week_data_text(uid: int) -> str:
         lines.append(f"Цели не заданы. Норма воды {tg['water']} мл.")
     if user.get("goal"):
         lines.append(f"Цель клиента: {user['goal']}.")
+    # Что именно клиент делал на тренировке — тренеру это ценнее галочки
+    wmap: dict[str, dict] = {}
+    for w in db.workouts_detailed(uid, [x["date"] for x in s["series"]]):
+        if w["status"] == "done" and w["date"] not in wmap:
+            wmap[w["date"]] = w
     meals_by_date: dict[str, list[str]] = {}
     for m in s["meals"]:
         meals_by_date.setdefault(m["date"], []).append(m["dish"])
@@ -451,7 +469,13 @@ def week_data_text(uid: int) -> str:
         parts.append(f"Чек {d['chek']}" if d["chek"] else "Чек —")
         parts.append(f"вода {d['water']}")
         if d["workout"] == "done":
-            parts.append("тренировка ✓")
+            w = wmap.get(d["date"])
+            extra = []
+            if w and w["duration_min"]:
+                extra.append(f"{w['duration_min']} мин")
+            if w and w["description"]:
+                extra.append(w["description"][:120])
+            parts.append("тренировка ✓" + (f" ({', '.join(extra)})" if extra else ""))
         if d["wi"]:
             parts.append("working in ✓")
         lines.append("; ".join(parts) + f". Ел: {dishes}")
