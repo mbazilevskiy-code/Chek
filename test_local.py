@@ -1161,15 +1161,91 @@ def test_onboarding_lists_features():
     ok("cb_consent_no" in names, "обработчик отказа на месте")
 
 
+def test_ai_tips_toggle():
+    """Тренер может вернуть боту право советовать клиенту — флагом coaches.ai_tips."""
+    import bot as botmod
+    _fake_coach_bot(botmod)
+    coach = botmod.COACH_BY_BOT[FAKE_COACH_BOT]
+
+    data = {
+        "dish": "Круассан", "confidence": "высокая", "total_grams": 120,
+        "total_kcal": 420, "total_protein_g": 9, "total_fat_g": 24, "total_carbs_g": 42,
+        "chek_score": 3, "chek_verdict": "сильно обработанная выпечка",
+        "chek_tip": "Замени на цельнозерновой", "items": [],
+    }
+
+    coach["ai_tips"] = 0
+    eq(botmod.ai_tips_on(FAKE_COACH_BOT), False, "по умолчанию флаг выключен")
+    eq(botmod.show_advice(FAKE_COACH_BOT), False, "по умолчанию бот тренера не советует")
+    eq(botmod.show_advice(123456), True, "в личном боте советы доступны всегда")
+    off = botmod.fmt_meal_reply(data, [], None, advice=False)
+    ok("💡" not in off and "обработанная выпечка" not in off, "без флага советов нет")
+
+    coach["ai_tips"] = 1
+    eq(botmod.ai_tips_on(FAKE_COACH_BOT), True, "флаг включён")
+    eq(botmod.show_advice(FAKE_COACH_BOT), True, "с флагом бот тренера снова советует")
+
+    on = botmod.fmt_meal_reply(data, [], None, advice=True)
+    ok("По Чеку: 3/10" in on, "балл Чека остаётся")
+    ok("сильно обработанная выпечка" in on, "с флагом вердикт возвращается")
+    ok("💡 Замени на цельнозерновой" in on, "с флагом совет возвращается")
+
+    ok("/labreport" in botmod.labs_overview_text(LABS_UID, advice=True),
+       "с флагом в /labs возвращается разбор")
+    ok("/labreport" not in botmod.labs_overview_text(LABS_UID, advice=False),
+       "без флага разбора в /labs нет")
+
+    labels = [b.text for row in botmod.suppl_kb(LABS_UID, TODAY, client=False).inline_keyboard
+              for b in row]
+    ok(any("Совместимость" in x for x in labels), "с флагом кнопка совместимости есть")
+    labels_off = [b.text for row in botmod.suppl_kb(LABS_UID, TODAY, client=True).inline_keyboard
+                  for b in row]
+    ok(not any("Совместимость" in x for x in labels_off), "без флага кнопки нет")
+
+    with_verdict = botmod.build_day_overview(CLIENT_UID, TODAY, advice=True)
+    without = botmod.build_day_overview(CLIENT_UID, TODAY, advice=False)
+    ok("Еда по Чеку" in with_verdict and "Еда по Чеку" in without, "балл дня есть в обоих режимах")
+    ok(len(with_verdict) > len(without), "с флагом к баллу добавляется словесная оценка")
+
+    coach["ai_tips"] = 0    # возвращаем принцип по умолчанию
+
+
+def test_ai_tips_migration():
+    import sqlite3
+
+    def coach_columns():
+        con = sqlite3.connect(os.environ["DB_PATH"])
+        try:
+            return [r[1] for r in con.execute("PRAGMA table_info(coaches)")]
+        finally:
+            con.close()
+
+    cols = coach_columns()
+    eq(cols.count("ai_tips"), 1, "колонка ai_tips заведена ровно один раз")
+    db.init_db()
+    db.init_db()
+    eq(coach_columns(), cols, "повторная миграция не меняет схему coaches")
+
+    cid = db.list_coaches()[0]["id"]
+    eq(db.coach_by_id(cid)["ai_tips"], 0, "у существующих тренеров подсказки выключены")
+    db.update_coach(cid, ai_tips=1)
+    eq(db.coach_by_id(cid)["ai_tips"], 1, "флаг сохраняется в базе")
+    db.update_coach(cid, ai_tips=0)
+    eq(db.coach_by_id(cid)["ai_tips"], 0, "и выключается обратно")
+
+
 def test_coach_still_gets_advice():
     ok("ЧЕРНОВИК СООБЩЕНИЯ КЛИЕНТУ" in analyzer.BRIEF_SYSTEM,
        "в брифе тренеру остался черновик сообщения клиенту")
     ok("НА ЧТО ОБРАТИТЬ ВНИМАНИЕ" in analyzer.BRIEF_SYSTEM,
        "в брифе тренеру остались пункты внимания")
-    ok("Не давай советов" in analyzer.WORKOUT_SYSTEM,
-       "из тренировки клиенту убраны советы по технике и восстановлению")
-    ok("совет по технике" not in analyzer.WORKOUT_SYSTEM,
-       "пункт с советом из плана тренировки убран")
+    ok("Не давай советов" in analyzer.workout_system(False),
+       "без флага из тренировки убраны советы по технике и восстановлению")
+    ok("совет по технике" in analyzer.workout_system(True),
+       "с флагом пункт с советом в тренировке возвращается")
+    for mode in (True, False):
+        ok("{{TIPS}}" not in analyzer.workout_system(mode),
+           f"плейсхолдер промпта подставлен (with_tips={mode})")
 
     captured = {}
 
@@ -1340,6 +1416,10 @@ def main() -> int:
     test_client_labs_confirmation()
     print("- онбординг: приветствие и /help со всеми функциями")
     test_onboarding_lists_features()
+    print("- переключатель /aitips")
+    test_ai_tips_toggle()
+    print("- миграция ai_tips идемпотентна")
+    test_ai_tips_migration()
     print("- тренер: бриф по-прежнему советует")
     test_coach_still_gets_advice()
     print("- bot: /cancel и команды внутри диалогов")

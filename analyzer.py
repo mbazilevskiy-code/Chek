@@ -387,9 +387,7 @@ WORKOUT_SYSTEM = """Ты — тренер и холистический коуч
 регрессия в скобках, если упражнение пока сложное. Учитывай primal patterns Чека \
 (тяга, жим, присед, наклон, ротация).
 4. 🌊 Заминка working in: 2–3 минуты — дыхание/лёгкая растяжка, одна-две строки.
-
-Не давай советов по технике, восстановлению или образу жизни — только сам план \
-занятия. Рекомендации даёт тренер, не ты.
+{{TIPS}}
 
 Правила: пиши по-русски, обращайся на «ты», дружелюбно и без воды. НЕ используй \
 markdown-разметку (звёздочки, решётки) — только обычный текст, эмодзи и переносы строк. \
@@ -398,7 +396,18 @@ markdown-разметку (звёздочки, решётки) — только 
 небольшую прогрессию."""
 
 
-async def generate_workout(profile: dict | None, context: str = "") -> str:
+WORKOUT_TIPS_ON = "5. 💡 Один короткий совет по технике или восстановлению в духе Чека."
+WORKOUT_TIPS_OFF = ("Не давай советов по технике, восстановлению или образу жизни — "
+                    "только сам план занятия. Рекомендации даёт тренер, не ты.")
+
+
+def workout_system(with_tips: bool) -> str:
+    """Промпт тренировки: с советом от бота или без него."""
+    return WORKOUT_SYSTEM.replace("{{TIPS}}", WORKOUT_TIPS_ON if with_tips else WORKOUT_TIPS_OFF)
+
+
+async def generate_workout(profile: dict | None, context: str = "",
+                           with_tips: bool = False) -> str:
     """Генерирует тренировку на турнике/брусьях по Чеку. Возвращает обычный текст."""
     parts = []
     if profile:
@@ -416,7 +425,7 @@ async def generate_workout(profile: dict | None, context: str = "") -> str:
     if context:
         parts.append(context)
     parts.append("Составь тренировку на сегодня.")
-    return await generate_text(WORKOUT_SYSTEM, "\n".join(parts))
+    return await generate_text(workout_system(with_tips), "\n".join(parts))
 
 
 BRIEF_SYSTEM = """Ты — AI-ассистент тренера по здоровью. Тренер ведёт клиента и получает \

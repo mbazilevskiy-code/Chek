@@ -70,9 +70,24 @@ def is_coach_himself(uid: int, coach: dict | None) -> bool:
 
 
 def is_client_bot(message_bot_id: int) -> bool:
-    """Бот тренера. Здесь бот только собирает данные: советы, оценки и разборы
-    получает тренер (бриф и кабинет). В личном боте владельца ограничения нет."""
+    """Бот тренера. По умолчанию здесь бот только собирает данные: советы, оценки
+    и разборы получает тренер (бриф и кабинет). В личном боте ограничения нет."""
     return coach_of(message_bot_id) is not None
+
+
+def ai_tips_on(message_bot_id: int) -> bool:
+    """Тренер включил своему боту ИИ-подсказки клиенту (coaches.ai_tips)."""
+    coach = coach_of(message_bot_id)
+    return bool(coach and coach.get("ai_tips"))
+
+
+def show_advice(message_bot_id: int) -> bool:
+    """Показывать ли клиенту оценки и советы ИИ.
+
+    Личный бот — всегда да. Бот тренера — только если тренер включил ai_tips;
+    по умолчанию выключено, см. журнал решений в CLAUDE.md.
+    """
+    return (not is_client_bot(message_bot_id)) or ai_tips_on(message_bot_id)
 
 
 def _ensure(message: Message) -> None:
@@ -287,7 +302,7 @@ def day_extras_lines(uid: int, date: str, user: dict | None) -> list[str]:
     return lines
 
 
-def build_day_overview(uid: int, date: str) -> str:
+def build_day_overview(uid: int, date: str, advice: bool = False) -> str:
     user = db.get_user(uid)
     meals = db.meals_for_date(uid, date)
     lines = []
@@ -301,7 +316,8 @@ def build_day_overview(uid: int, date: str) -> str:
                      else f"\n   Перебор: {_i(-rest)} ккал 😬")
         lines.append(food)
         if t["chek"]:
-            lines.append(f"{chek_emoji(t['chek'])} Еда по Чеку: {t['chek']:.1f}/10")
+            verdict = f" — {nutrition.chek_day_verdict(t['chek'])}" if advice else ""
+            lines.append(f"{chek_emoji(t['chek'])} Еда по Чеку: {t['chek']:.1f}/10{verdict}")
     else:
         lines.append("🍽 Еда: записей нет")
     lines.extend(day_extras_lines(uid, date, user))
@@ -324,7 +340,8 @@ def day_summary_line(user: dict | None, totals: dict) -> str:
     )
 
 
-def fmt_meal_reply(data: dict, meals: list[dict], user: dict | None) -> str:
+def fmt_meal_reply(data: dict, meals: list[dict], user: dict | None,
+                   advice: bool = False) -> str:
     dish = html.escape(str(data.get("dish") or "Приём пищи"))
     conf = html.escape(str(data.get("confidence") or "средняя"))
     grams = _i(data.get("total_grams"))
@@ -350,10 +367,17 @@ def fmt_meal_reply(data: dict, meals: list[dict], user: dict | None) -> str:
     if data.get("assumptions"):
         lines.append(f"<i>💭 {html.escape(str(data['assumptions']))}</i>")
 
-    # Клиенту — только число. Вердикт и совет ИИ уходят тренеру: они лежат в
-    # raw_json и видны в кабинете и недельном брифе.
+    # Без advice клиенту идёт только число: вердикт и совет ИИ лежат в raw_json
+    # и достаются тренеру в кабинете и брифе.
     lines.append("")
-    lines.append(f"{chek_emoji(score)} <b>По Чеку: {score}/10</b>")
+    if advice:
+        verdict = html.escape(str(data.get("chek_verdict") or ""))
+        lines.append(f"{chek_emoji(score)} <b>По Чеку: {score}/10</b>"
+                     + (f" — {verdict}" if verdict else ""))
+        if data.get("chek_tip"):
+            lines.append(f"💡 {html.escape(str(data['chek_tip']))}")
+    else:
+        lines.append(f"{chek_emoji(score)} <b>По Чеку: {score}/10</b>")
 
     totals = nutrition.day_totals(meals)
     lines.append("")
@@ -457,7 +481,7 @@ async def analyze_and_reply(
     )
     meals = db.meals_for_date(uid, date)
     user = db.get_user(uid)
-    await note.edit_text(fmt_meal_reply(data, meals, user))
+    await note.edit_text(fmt_meal_reply(data, meals, user, show_advice(message.bot.id)))
 
 
 # ---------------------------------------------------------------- команды
@@ -537,6 +561,8 @@ async def cmd_start(message: Message) -> None:
             f"{cabinet_url}\n"
             "(адрес сервера тот же, что в ссылке дашборда владельца; сохрани в закладки)\n\n"
             "📋 /clients — краткий список клиентов прямо здесь.\n"
+            "🧠 /aitips — давать ли клиентам ИИ-разборы и советы (по умолчанию нет: "
+            "разбор — твоя работа).\n"
             "Кстати, ты можешь пользоваться ботом и как клиент — просто присылай еду."
         )
         return
@@ -628,6 +654,38 @@ async def cmd_clients(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
+@router.message(Command("aitips"))
+async def cmd_aitips(message: Message) -> None:
+    """Тренер сам решает, советует ли его бот клиентам. По умолчанию — нет."""
+    coach = coach_of(message.bot.id)
+    if not coach or not is_coach_himself(message.from_user.id, coach):
+        await message.answer("Эта команда — для тренера, владельца этого бота 🙂")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1].strip().lower() if len(parts) > 1 else ""
+    if arg in ("on", "вкл", "1"):
+        db.update_coach(coach["id"], ai_tips=1)
+        coach["ai_tips"] = 1
+        await message.answer(
+            "🧠 ИИ-подсказки клиентам <b>включены</b>.\n"
+            "Бот снова даёт разбор еды и анализов, советы по БАДам и технике, "
+            "а на /today — бриф недели тем же движком, что и твой бриф в кабинете."
+        )
+    elif arg in ("off", "выкл", "0"):
+        db.update_coach(coach["id"], ai_tips=0)
+        coach["ai_tips"] = 0
+        await message.answer(
+            "🔕 ИИ-подсказки клиентам <b>выключены</b>.\n"
+            "Бот собирает данные и подтверждает их, разбор и советы даёшь ты."
+        )
+    else:
+        state = "включены" if coach.get("ai_tips") else "выключены"
+        await message.answer(
+            f"🧠 ИИ-подсказки клиентам сейчас <b>{state}</b>.\n"
+            "Переключить: <code>/aitips on</code> · <code>/aitips off</code>"
+        )
+
+
 class NewCoach(StatesGroup):
     token = State()
     name = State()
@@ -714,8 +772,28 @@ async def cmd_today(message: Message) -> None:
                 f"{m['time']} · {html.escape(m['dish'])} — {_i(m['kcal'])} ккал · Чек {m['chek_score']}"
             )
         lines.append("")
-    lines.append(build_day_overview(uid, date))
+    advice = show_advice(message.bot.id)
+    lines.append(build_day_overview(uid, date, advice))
     await message.answer("\n".join(lines))
+
+    # Если тренер включил подсказки — тем же движком, что и бриф тренеру.
+    if advice and ai_tips_on(message.bot.id):
+        note = await message.answer("🧠 Собираю бриф по твоей неделе…")
+        try:
+            user = db.get_user(uid) or {}
+            text = await analyzer.generate_brief(
+                user.get("name") or "клиент",
+                web_dashboard.week_data_text(uid),
+                coach_of(message.bot.id),
+            )
+        except DemoModeError:
+            await note.edit_text(DEMO_HOWTO)
+            return
+        except Exception as e:  # noqa: BLE001
+            log.exception("Ошибка брифа для клиента")
+            await note.edit_text(_error_reply(e))
+            return
+        await note.edit_text("🧠 <b>Бриф недели</b>\n\n" + html.escape(text.strip())[:3800])
 
 
 @router.message(Command("week"))
@@ -906,7 +984,8 @@ async def cmd_train(message: Message) -> None:
         ctx_parts.append("Недавних тренировок не записано — начни умеренно.")
 
     try:
-        text = await analyzer.generate_workout(profile, " ".join(ctx_parts))
+        text = await analyzer.generate_workout(profile, " ".join(ctx_parts),
+                                               with_tips=show_advice(message.bot.id))
     except DemoModeError:
         await note.edit_text(DEMO_HOWTO)
         return
@@ -1087,7 +1166,8 @@ async def reminder_loop() -> None:
                 if ev == hm and _fire_once(uid, date, "evening"):
                     await bot.send_message(
                         uid,
-                        "🌙 <b>Вечерняя сводка дня</b>\n\n" + build_day_overview(uid, date),
+                        "🌙 <b>Вечерняя сводка дня</b>\n\n"
+                        + build_day_overview(uid, date, show_advice(bot.id)),
                         reply_markup=evening_kb(uid, date),
                     )
         except Exception:  # noqa: BLE001
@@ -1162,7 +1242,7 @@ async def cmd_supplements(message: Message) -> None:
     uid = message.from_user.id
     date, _ = now_date_time()
     _ensure(message)
-    client = is_client_bot(message.bot.id)
+    client = not show_advice(message.bot.id)
     await message.answer(suppl_text(uid, date, client), reply_markup=suppl_kb(uid, date, client))
 
 
@@ -1172,7 +1252,7 @@ async def cb_suppl(cb: CallbackQuery, state: FSMContext) -> None:
     date, _ = now_date_time()
     parts = cb.data.split(":")
     action = parts[1]
-    client = is_client_bot(cb.message.bot.id)
+    client = not show_advice(cb.message.bot.id)
 
     if action == "take":
         taken = db.toggle_supplement_taken(uid, date, int(parts[2]))
@@ -1270,8 +1350,8 @@ async def add_suppl_plan(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"✅ Добавил: <b>{html.escape(data['name'])}</b> — {PLAN_LABELS[plan]}",
         reply_markup=ReplyKeyboardRemove())
-    # Проверку совместимости (ИИ-совет) клиенту тренера не показываем.
-    if not is_client_bot(message.bot.id):
+    # Проверку совместимости (ИИ-совет) показываем, только если она разрешена.
+    if show_advice(message.bot.id):
         await _run_suppl_check(message, uid)
 
 
@@ -1393,7 +1473,7 @@ def _flag_icon(flag: str) -> str:
     return {"низко": "🔽", "высоко": "🔼"}.get(flag, "✅")
 
 
-def labs_overview_text(uid: int) -> str:
+def labs_overview_text(uid: int, advice: bool = False) -> str:
     dates = db.lab_dates(uid)
     if not dates:
         return ("🧪 <b>Анализы</b>\n\nПока нет загруженных анализов.\n"
@@ -1416,14 +1496,15 @@ def labs_overview_text(uid: int) -> str:
     else:
         lines.append("✅ Все показатели последнего бланка в пределах нормы.")
     lines.append("")
-    lines.append("Прислать новый бланк — /labupload")
+    lines.append("Прислать новый бланк — /labupload"
+                 + (" · разбор с рекомендациями — /labreport" if advice else ""))
     return "\n".join(lines)
 
 
 @router.message(Command("labs", "analysis"))
 async def cmd_labs(message: Message) -> None:
     _ensure(message)
-    await message.answer(labs_overview_text(message.from_user.id))
+    await message.answer(labs_overview_text(message.from_user.id, show_advice(message.bot.id)))
 
 
 @router.message(Command("labupload"))
@@ -1467,7 +1548,7 @@ async def _process_labs(message: Message, data: bytes, media_type: str,
     # Подтверждение нейтральное: цифры — да, трактовка — нет. Разбор идёт тренеру.
     n = len(parsed["markers"])
     abn = [m for m in parsed["markers"] if m["flag"] in ("низко", "высоко")]
-    tail = ("Передал тренеру." if is_client_bot(message.bot.id) else "Записал в дневник.")
+    tail = ("Записал в дневник." if not is_client_bot(message.bot.id) else "Передал тренеру.")
     await note.edit_text(
         f"✅ Разобрал бланк: <b>{html.escape(parsed['panel'])}</b> от {date} — "
         f"{n} показателей, {len(abn)} вне нормы. {tail} Диагнозы не ставлю.\n\n"
@@ -1497,7 +1578,7 @@ async def lab_document(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("labreport"))
 async def cmd_labreport(message: Message) -> None:
-    if is_client_bot(message.bot.id):
+    if not show_advice(message.bot.id):
         # Разбор анализов — работа тренера; ИИ по-прежнему готовит его, но в бриф.
         await message.answer(
             "Разбор анализов делает твой тренер — я передал ему показатели и динамику.\n"

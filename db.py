@@ -181,6 +181,12 @@ _SUPPL_COLUMNS = {
     "plan_days_per_week": "INTEGER DEFAULT 7",
 }
 
+# Новые колонки coaches. По умолчанию бот тренера клиенту не советует
+# (см. журнал решений в CLAUDE.md); тренер может включить подсказки себе.
+_COACH_COLUMNS = {
+    "ai_tips": "INTEGER DEFAULT 0",
+}
+
 
 @contextmanager
 def _conn():
@@ -204,6 +210,10 @@ def init_db() -> None:
         for col, ddl in _SUPPL_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE supplements ADD COLUMN {col} {ddl}")
+        have = {r["name"] for r in c.execute("PRAGMA table_info(coaches)").fetchall()}
+        for col, ddl in _COACH_COLUMNS.items():
+            if col not in have:
+                c.execute(f"ALTER TABLE coaches ADD COLUMN {col} {ddl}")
 
 
 # ---------- настройки ----------
