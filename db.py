@@ -225,6 +225,11 @@ _OURA_COLUMNS = {
     "extra_json": "TEXT",
 }
 
+# Новая колонка wellbeing: сон со слов клиента (не путать с sleep_h из кольца).
+_WELLBEING_COLUMNS = {
+    "sleep_h": "REAL",
+}
+
 # Новые колонки coaches. По умолчанию бот тренера клиенту не советует
 # (см. журнал решений в CLAUDE.md); тренер может включить подсказки себе.
 _COACH_COLUMNS = {
@@ -271,6 +276,10 @@ def init_db() -> None:
         for col, ddl in _WORKOUT_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE workout_log ADD COLUMN {col} {ddl}")
+        have = {r["name"] for r in c.execute("PRAGMA table_info(wellbeing)").fetchall()}
+        for col, ddl in _WELLBEING_COLUMNS.items():
+            if col not in have:
+                c.execute(f"ALTER TABLE wellbeing ADD COLUMN {col} {ddl}")
         have = {r["name"] for r in c.execute("PRAGMA table_info(oura_daily)").fetchall()}
         for col, ddl in _OURA_COLUMNS.items():
             if col not in have:
@@ -604,7 +613,7 @@ def supplement_taken_days(user_id: int, dates: list[str]) -> dict[int, int]:
 # ---------- самочувствие ----------
 
 def set_wellbeing(user_id: int, date: str, **fields) -> None:
-    allowed = {"energy", "mood", "stress", "libido", "note"}
+    allowed = {"energy", "mood", "stress", "libido", "note", "sleep_h"}
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
         return
@@ -928,6 +937,38 @@ def add_workout_log(user_id: int, date: str, time: str, status: str, note: str =
             (user_id, date, time, status, note, duration_min,
              (description or "").strip()[:500], kcal_burned, kcal_source),
         )
+
+
+def delete_last_workout(user_id: int, date: str) -> dict | None:
+    """Убирает последнюю запись о тренировке за дату (для /undo)."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM workout_log WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1",
+            (user_id, date),
+        ).fetchone()
+        if not row:
+            return None
+        c.execute("DELETE FROM workout_log WHERE id = ?", (row["id"],))
+        return dict(row)
+
+
+def delete_last_water(user_id: int, date: str) -> int:
+    """Убирает последнюю порцию воды за дату. Возвращает сколько мл убрали."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id, ml FROM water_log WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1",
+            (user_id, date),
+        ).fetchone()
+        if not row:
+            return 0
+        c.execute("DELETE FROM water_log WHERE id = ?", (row["id"],))
+        return int(row["ml"])
+
+
+def delete_wellbeing(user_id: int, date: str) -> bool:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM wellbeing WHERE user_id = ? AND date = ?", (user_id, date))
+        return cur.rowcount > 0
 
 
 def workouts_detailed(user_id: int, dates: list[str], limit: int = 200) -> list[dict]:

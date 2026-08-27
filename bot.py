@@ -5,6 +5,7 @@
 """
 import asyncio
 import html
+import json
 import logging
 import os
 import re
@@ -445,6 +446,7 @@ async def analyze_and_reply(
     caption: str | None = None,
     text: str | None = None,
     source: str,
+    uid: int | None = None,
 ) -> None:
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     note = await message.answer("🔍 Смотрю, что у тебя на тарелке…" if image_bytes
@@ -470,9 +472,10 @@ async def analyze_and_reply(
         )
         return
 
-    uid = message.from_user.id
+    uid = uid or message.from_user.id
     date, time_ = now_date_time()
-    _ensure(message)
+    if uid == message.from_user.id:
+        _ensure(message)
     db.add_meal(
         uid, date, time_, source,
         dish=str(data.get("dish") or "Приём пищи"),
@@ -493,7 +496,10 @@ async def analyze_and_reply(
 # ---------------------------------------------------------------- команды
 
 HELP_TEXT = (
-    "Вот всё, что я умею:\n\n"
+    "<b>Проще всего — просто наговори или напиши мне что угодно:</b> что съел, "
+    "как потренировался, как самочувствие. Я сам пойму и запишу куда нужно, "
+    "команды не обязательны.\n\n"
+    "А ещё умею:\n\n"
     "🍽 <b>Еда</b> — пришли фото или напиши текстом («2 яйца, тост с маслом, кофе»): "
     "посчитаю КБЖУ и запишу в дневник. Подпись к фото уточняет расчёт.\n"
     "💧 <b>Вода</b> — напиши «вода 300» или открой /water\n"
@@ -523,7 +529,11 @@ def coach_greeting(coach: dict, user_name: str) -> str:
     return (
         f"Привет, {html.escape(user_name)}! 👋\n"
         f"Я — <b>{brand}</b>, ассистент тренера <b>{cname}</b>.\n\n"
-        "Помогаю вести дневник между вашими встречами. Вот что я умею:\n\n"
+        "Помогаю вести дневник между вашими встречами.\n\n"
+        "<b>Проще всего — просто наговори или напиши мне что угодно:</b> что съел, "
+        "как потренировался, как самочувствие. Я сам пойму и запишу — "
+        "команды не обязательны.\n\n"
+        "А ещё умею:\n\n"
         "🍽 <b>Еда</b> — фото или текстом, посчитаю КБЖУ\n"
         "💧 <b>Вода</b> — напиши сколько, или /water\n"
         "🏋️ <b>Тренировки</b> — /train записать сделанную, /plan расписание\n"
@@ -605,12 +615,225 @@ async def route_transcript(message: Message, state: FSMContext, text: str) -> No
 
     if current is not None:
         # В остальных диалогах ждём конкретный ответ (кнопку, число, токен) —
-        # голосом на них не ответишь, поэтому не гадаем и не пишем это в еду.
+        # голосом на них не ответишь, поэтому не гадаем.
         await message.answer("Сейчас идёт диалог — ответь, пожалуйста, текстом "
                              "или выйди: /cancel")
         return
 
-    await analyze_and_reply(message, text=text, source="text")
+    # Вне диалогов — общий разбор: бот сам решает, в какую рубрику это писать.
+    await handle_free_input(message, state, text)
+
+
+# ------------------------------------------------ свободный ввод: бот сам разбирает
+
+CATEGORY_LABELS = {
+    "meal": "🍽 Еда", "water": "💧 Вода", "workout": "🏋️ Тренировка",
+    "wellbeing": "😌 Самочувствие", "supplement": "💊 БАД", "weight": "⚖️ Вес",
+}
+CATEGORY_KB = ikb([[(CATEGORY_LABELS["meal"], "fix:to:meal"),
+                    (CATEGORY_LABELS["water"], "fix:to:water")],
+                   [(CATEGORY_LABELS["workout"], "fix:to:workout"),
+                    (CATEGORY_LABELS["wellbeing"], "fix:to:wellbeing")],
+                   [(CATEGORY_LABELS["supplement"], "fix:to:supplement"),
+                    (CATEGORY_LABELS["weight"], "fix:to:weight")]])
+FIX_KB = ikb([[("↔️ Не та рубрика?", "fix:menu")]])
+
+
+def _remember_entry(uid: int, kind: str, text: str) -> None:
+    """Что записали последним — чтобы можно было откатить или перенести."""
+    db.set_setting(f"lastentry:{uid}", json.dumps({"kind": kind, "text": text},
+                                                  ensure_ascii=False))
+
+
+def _last_entry(uid: int) -> dict | None:
+    raw = db.get_setting(f"lastentry:{uid}")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+def _undo_entry(uid: int, date: str, kind: str) -> str:
+    """Откатывает последнюю запись выбранной рубрики. Возвращает, что убрали."""
+    if kind == "meal":
+        gone = db.delete_last_meal(uid, date)
+        return f"приём пищи «{gone['dish']}»" if gone else ""
+    if kind == "water":
+        ml = db.delete_last_water(uid, date)
+        return f"{ml} мл воды" if ml else ""
+    if kind == "workout":
+        gone = db.delete_last_workout(uid, date)
+        return "тренировку" if gone else ""
+    if kind == "wellbeing":
+        return "самочувствие" if db.delete_wellbeing(uid, date) else ""
+    if kind == "supplement":
+        return "отметку о БАДе"
+    return ""
+
+
+async def _log_entry(message: Message, entry: dict, source: str = "text",
+                     uid: int | None = None) -> None:
+    """Пишет одну распознанную запись в её рубрику и подтверждает человеку."""
+    uid = uid or message.from_user.id
+    date, time_ = now_date_time()
+    cat = entry["category"]
+    text = entry.get("text") or ""
+
+    if cat == "meal":
+        _remember_entry(uid, "meal", text)
+        await analyze_and_reply(message, text=text, source=source, uid=uid)
+        return
+
+    if cat == "water":
+        db.add_water(uid, date, time_, entry["ml"])
+        _remember_entry(uid, "water", text)
+        await message.answer(f"💧 Записал {entry['ml']} мл.\n"
+                             + water_text(uid, date, db.get_user(uid)),
+                             reply_markup=WATER_KB)
+        return
+
+    if cat == "workout":
+        minutes = entry.get("duration_min")
+        hhmm = _parse_hhmm(entry.get("time")) or time_
+        kcal, ksrc = 0, ""
+        if minutes:
+            kcal, ksrc = await _workout_kcal(uid, date, hhmm, minutes)
+        desc = (entry.get("description") or text)[:500]
+        db.add_workout_log(uid, date, hhmm, "done", note="free", duration_min=minutes,
+                           description=desc, kcal_burned=kcal or None, kcal_source=ksrc)
+        _remember_entry(uid, "workout", text)
+        bits = [f"в {hhmm}"]
+        if minutes:
+            bits.append(f"{minutes} мин")
+        if kcal:
+            bits.append(f"≈ {kcal} ккал (оценка)" if ksrc == "estimate" else f"{kcal} ккал (Oura)")
+        tail = f". {html.escape(desc)}" if desc else ""
+        await message.answer(f"🏋️ Записал тренировку: {', '.join(bits)}{tail}",
+                             reply_markup=FIX_KB)
+        return
+
+    if cat == "wellbeing":
+        fields = {k: entry.get(k) for k in ("energy", "mood", "stress", "sleep_h")
+                  if entry.get(k)}
+        db.set_wellbeing(uid, date, note=text[:500], **fields)
+        _remember_entry(uid, "wellbeing", text)
+        named = {"energy": "⚡️ энергия", "mood": "🙂 настроение",
+                 "stress": "😤 стресс", "sleep_h": "😴 сон"}
+        parts = [f"{named[k]} {v}" + (" ч" if k == "sleep_h" else "")
+                 for k, v in fields.items()]
+        await message.answer("😌 Записал самочувствие: " + ", ".join(parts)
+                             if parts else "😌 Записал заметку о самочувствии.",
+                             reply_markup=FIX_KB)
+        return
+
+    if cat == "supplement":
+        name = entry["supplement_name"]
+        existing = next((s for s in db.list_supplements(uid)
+                         if s["name"].lower() in name.lower()
+                         or name.lower() in s["name"].lower()), None)
+        if existing is None:
+            sid = db.add_supplement(uid, name, "")
+        else:
+            sid = existing["id"]
+        if sid not in db.taken_supplements(uid, date):
+            db.toggle_supplement_taken(uid, date, sid)
+        _remember_entry(uid, "supplement", text)
+        taken, total = len(db.taken_supplements(uid, date)), len(db.list_supplements(uid))
+        await message.answer(f"💊 Отметил приём: {html.escape(name)} ({taken}/{total} за сегодня)",
+                             reply_markup=FIX_KB)
+        return
+
+    if cat == "weight":
+        kg = entry["weight_kg"]
+        was = (db.get_user(uid) or {}).get("weight_kg")
+        db.update_user(uid, weight_kg=kg)
+        _remember_entry(uid, "weight", str(was or ""))
+        delta = f" (было {was:g})" if was else ""
+        await message.answer(f"⚖️ Записал вес: {kg:g} кг{delta}", reply_markup=FIX_KB)
+        return
+
+
+async def handle_free_input(message: Message, state: FSMContext, text: str,
+                            source: str = "text") -> None:
+    """Свободный ввод: бот сам понимает, что это, и пишет в нужную рубрику."""
+    _ensure(message)
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    try:
+        entries = await analyzer.route_entry(text)
+    except DemoModeError:
+        await message.answer(DEMO_HOWTO)
+        return
+    except Exception as e:  # noqa: BLE001
+        log.exception("Разбор свободного ввода не удался")
+        await message.answer(_error_reply(e))
+        return
+
+    useful = [e for e in entries if e["category"] != "other"]
+    if not useful:
+        await message.answer(
+            "Не понял, что записать 🤔 Попробуй иначе — например: «съел овсянку с ягодами», "
+            "«турник 40 минут», «выпил 500 мл», «устал, спал 6 часов»."
+        )
+        return
+
+    # Одна запись и модель не уверена — лучше переспросить, чем записать не туда.
+    if len(useful) == 1 and useful[0]["confidence"] == "низкая":
+        db.set_setting(f"pending:{message.from_user.id}", text[:500])
+        await message.answer(f"Не уверен, куда это записать: «{html.escape(text[:200])}»\n"
+                             "Подскажешь?", reply_markup=CATEGORY_KB)
+        return
+
+    for entry in useful:
+        await _log_entry(message, entry, source)
+
+
+@router.callback_query(F.data.startswith("fix:"))
+async def cb_fix(cb: CallbackQuery) -> None:
+    uid = cb.from_user.id
+    date, _ = now_date_time()
+    parts = cb.data.split(":")
+
+    if parts[1] == "menu":
+        await cb.answer()
+        last = _last_entry(uid)
+        db.set_setting(f"pending:{uid}", (last or {}).get("text", ""))
+        await cb.message.answer("Куда перенести?", reply_markup=CATEGORY_KB)
+        return
+
+    target = parts[2]
+    text = db.get_setting(f"pending:{uid}") or ""
+    last = _last_entry(uid)
+    if last and last.get("kind") != target:
+        _undo_entry(uid, date, last["kind"])
+    await cb.answer("Переношу")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+
+    # Числа вытаскиваем из исходного текста локально: повторно спрашивать модель
+    # ради переноса дорого, а человек и так уже поправил рубрику руками.
+    entry = {"category": target, "text": text, "confidence": "высокая"}
+    if target == "water":
+        m = re.search(r"(\d{2,4})", text)
+        entry["ml"] = int(m.group(1)) if m else 250
+    elif target == "workout":
+        entry["duration_min"] = _parse_duration(text)
+        entry["time"] = None
+        entry["description"] = text
+    elif target == "wellbeing":
+        entry.update(energy=None, mood=None, stress=None, sleep_h=None)
+    elif target == "supplement":
+        entry["supplement_name"] = text[:80]
+    elif target == "weight":
+        m = re.search(r"(\d{2,3})(?:[.,](\d))?", text)
+        if not m:
+            await cb.message.answer("Не нашёл вес в сообщении — напиши, например, «вес 78».")
+            return
+        entry["weight_kg"] = float(m.group(1) + ("." + m.group(2) if m.group(2) else ""))
+    await _log_entry(cb.message, entry, uid=uid)
 
 
 @router.message(CommandStart())
@@ -912,17 +1135,23 @@ async def cmd_week(message: Message) -> None:
 
 @router.message(Command("undo"))
 async def cmd_undo(message: Message) -> None:
+    """Откатывает последнюю запись — любой рубрики, не только еды."""
+    uid = message.from_user.id
     date, _ = now_date_time()
-    deleted = db.delete_last_meal(message.from_user.id, date)
-    if not deleted:
-        await message.answer("Сегодня удалять нечего — записей еды нет.")
+    last = _last_entry(uid)
+    kind = (last or {}).get("kind") or "meal"
+    gone = _undo_entry(uid, date, kind)
+    if not gone and kind != "meal":
+        gone, kind = _undo_entry(uid, date, "meal"), "meal"
+    if not gone:
+        await message.answer("Сегодня удалять нечего 🙂")
         return
-    meals = db.meals_for_date(message.from_user.id, date)
-    t = nutrition.day_totals(meals)
-    await message.answer(
-        f"🗑 Удалил: {html.escape(deleted['dish'])} ({_i(deleted['kcal'])} ккал).\n"
-        f"Осталось за сегодня: {_i(t['kcal'])} ккал."
-    )
+    db.set_setting(f"lastentry:{uid}", "")
+    tail = ""
+    if kind == "meal":
+        t = nutrition.day_totals(db.meals_for_date(uid, date))
+        tail = f"\nОсталось за сегодня: {_i(t['kcal'])} ккал."
+    await message.answer(f"🗑 Убрал {html.escape(gone)}.{tail}")
 
 
 @router.message(Command("targets"))
@@ -2094,7 +2323,7 @@ async def on_document(message: Message) -> None:
 
 
 @router.message(StateFilter(None), F.text)
-async def on_text(message: Message) -> None:
+async def on_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     low = text.lower()
 
@@ -2116,9 +2345,11 @@ async def on_text(message: Message) -> None:
         await message.answer("Не знаю такую команду 🤔 Список команд: /help")
         return
     if len(text) < 3:
-        await message.answer("Опиши еду подробнее или пришли фото 📸")
+        await message.answer("Расскажи чуть подробнее — или пришли фото 📸")
         return
-    await analyze_and_reply(message, text=text, source="text")
+    # Свободный текст разбирает роутер: он сам решит, это еда, вода,
+    # тренировка или самочувствие.
+    await handle_free_input(message, state, text)
 
 
 @router.message()

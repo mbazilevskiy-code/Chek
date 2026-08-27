@@ -20,6 +20,10 @@ _TMPDIR = tempfile.mkdtemp(prefix="chek_tests_")
 os.environ["DB_PATH"] = os.path.join(_TMPDIR, "test.db")
 # Фиксируем окружение, чтобы личный .env не влиял на результат тестов.
 os.environ["PUBLIC_BASE_URL"] = ""
+# Ключи ИИ гасим НАМЕРЕННО: тесты не должны ходить в реальные API ни при каких
+# условиях. Тестам, которым нужен провайдер, ставят его сами и мокают клиента.
+os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["OPENROUTER_API_KEY"] = ""
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -117,6 +121,22 @@ def test_users():
 
 
 # ---------------------------------------------------------------- db: еда
+
+
+def test_offline_by_default():
+    """Тесты не должны ходить в реальные API — провайдер по умолчанию демо."""
+    eq(config.ACTIVE_PROVIDER, "demo", "в тестах ИИ-провайдер выключен")
+    eq(config.ANTHROPIC_API_KEY, "", "ключ Anthropic погашен")
+    eq(config.OPENROUTER_API_KEY, "", "ключ OpenRouter погашен")
+
+    async def call():
+        return await analyzer.route_entry("съел овсянку")
+
+    try:
+        asyncio.run(call())
+        ok(False, "роутер обязан отказать в демо-режиме, а не звонить наружу")
+    except analyzer.DemoModeError:
+        ok(True, "роутер в демо-режиме наружу не ходит")
 
 
 def test_wal_mode():
@@ -1040,12 +1060,21 @@ class _FakeNote:
         self.text = text
 
 
+class _FakeBot:
+    def __init__(self, bot_id):
+        self.id = bot_id
+
+    async def send_chat_action(self, *a, **kw):
+        return None
+
+
 class _FakeMessage:
     """Ровно столько от Message, сколько нужно обработчику. Без сети."""
 
     def __init__(self, uid, bot_id):
         self.from_user = type("U", (), {"id": uid, "first_name": "Тест"})()
-        self.bot = type("B", (), {"id": bot_id})()
+        self.bot = _FakeBot(bot_id)
+        self.chat = type("C", (), {"id": uid})()
         self.note = _FakeNote()
         self.sent = []
 
@@ -1653,12 +1682,16 @@ async def _voice_to(state_name, transcript):
     async def fake_analyze(message, **kw):
         routed["food"] = kw.get("text")
 
-    saved = botmod.analyze_and_reply
-    botmod.analyze_and_reply = fake_analyze
+    async def fake_route(text):
+        routed["router"] = text
+        return [{"category": "meal", "text": text, "confidence": "высокая"}]
+
+    saved_analyze, saved_route = botmod.analyze_and_reply, analyzer.route_entry
+    botmod.analyze_and_reply, analyzer.route_entry = fake_analyze, fake_route
     try:
         await botmod.route_transcript(msg, state, transcript)
     finally:
-        botmod.analyze_and_reply = saved
+        botmod.analyze_and_reply, analyzer.route_entry = saved_analyze, saved_route
     return routed, msg.sent
 
 
@@ -1751,6 +1784,203 @@ def test_announce_send():
     ok("announce" not in src, "бот не знает про рассылку — она не запустится сама на рестарте")
 
 
+# ------------------------------------------------- свободный ввод: бот сам разбирает
+
+FREE_UID = 7020
+
+
+def _entries(payload):
+    """Прогоняет ответ модели через нормализацию роутера."""
+    return analyzer._normalize_entries(payload)
+
+
+def test_router_normalize():
+    meal = _entries({"entries": [{"category": "meal", "text": "съел овсянку с ягодами"}]})
+    eq(len(meal), 1, "одна запись")
+    eq(meal[0]["category"], "meal", "«съел овсянку» — это еда")
+    eq(meal[0]["text"], "съел овсянку с ягодами", "фрагмент сохранён дословно")
+
+    wo = _entries({"entries": [{"category": "workout", "text": "турник 40 минут",
+                                "duration_min": 40, "description": "турник"}]})
+    eq(wo[0]["category"], "workout", "«турник 40 минут» — тренировка")
+    eq(wo[0]["duration_min"], 40, "длительность извлечена")
+
+    wb = _entries({"entries": [{"category": "wellbeing", "text": "устал, плохо спал",
+                                "energy": 3, "sleep_h": 5}]})
+    eq(wb[0]["category"], "wellbeing", "«устал, плохо спал» — самочувствие")
+    eq(wb[0]["energy"], 3, "энергия по шкале")
+    eq(wb[0]["sleep_h"], 5.0, "часы сна")
+
+    water = _entries({"entries": [{"category": "water", "text": "выпил 500 мл", "ml": 500}]})
+    eq(water[0]["ml"], 500, "миллилитры извлечены")
+
+    multi = _entries({"entries": [
+        {"category": "meal", "text": "поел овсянку"},
+        {"category": "water", "text": "выпил два стакана", "ml": 500},
+        {"category": "wellbeing", "text": "устал", "energy": 3},
+    ]})
+    eq([e["category"] for e in multi], ["meal", "water", "wellbeing"],
+       "одно сообщение — три рубрики")
+
+    # мусор и защитные рамки
+    eq(_entries({"entries": [{"category": "water", "text": "воды", "ml": 0}]}), [],
+       "вода без объёма не записывается")
+    eq(_entries({"entries": [{"category": "wellbeing", "text": "нормально"}]}), [],
+       "самочувствие без единой оценки не записывается")
+    eq(_entries({"entries": [{"category": "weight", "text": "вес 5", "weight_kg": 5}]}), [],
+       "неправдоподобный вес отбрасывается")
+    eq(_entries({"entries": [{"category": "выдумка", "text": "что-то"}]})[0]["category"],
+       "other", "незнакомая рубрика превращается в other")
+    eq(_entries({"entries": [{"category": "wellbeing", "text": "x", "energy": 99}]})[0]["energy"],
+       10, "оценка ужимается в шкалу 1-10")
+    eq(_entries({}), [], "пустой ответ модели — пустой список")
+
+
+async def _free(text, entries, uid=FREE_UID):
+    """Прогон диспетчера с подменённым роутером — модель не зовём."""
+    import bot as botmod
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    async def fake_route(_text):
+        return analyzer._normalize_entries({"entries": entries})
+
+    meals = []
+
+    async def fake_meal(message, **kw):
+        meals.append(kw.get("text"))
+
+    saved_route, saved_meal = analyzer.route_entry, botmod.analyze_and_reply
+    analyzer.route_entry = fake_route
+    botmod.analyze_and_reply = fake_meal
+    state = FSMContext(storage=MemoryStorage(),
+                       key=StorageKey(bot_id=1, chat_id=uid, user_id=uid))
+    msg = _FakeMessage(uid, 1)
+    try:
+        await botmod.handle_free_input(msg, state, text)
+    finally:
+        analyzer.route_entry, botmod.analyze_and_reply = saved_route, saved_meal
+    return msg.sent, meals
+
+
+def test_free_input_dispatch():
+    db.ensure_user(FREE_UID, "Свободный ввод")
+
+    sent, meals = asyncio.run(_free("съел овсянку", [{"category": "meal", "text": "съел овсянку"}]))
+    eq(meals, ["съел овсянку"], "еда уходит в существующий разбор еды")
+
+    sent, _ = asyncio.run(_free("выпил 500 мл",
+                                [{"category": "water", "text": "выпил 500 мл", "ml": 500}]))
+    eq(db.water_total(FREE_UID, TODAY), 500, "вода записана")
+    ok(any("500 мл" in s for s in sent), "подтверждение по воде показано")
+
+    sent, _ = asyncio.run(_free("турник 40 минут",
+                                [{"category": "workout", "text": "турник 40 минут",
+                                  "duration_min": 40, "description": "турник"}]))
+    w = db.workout_for_date(FREE_UID, TODAY)
+    ok(w is not None, "тренировка записана")
+    eq(w["duration_min"], 40, "длительность записана")
+    eq(w["description"], "турник", "описание записано")
+    ok(w["kcal_burned"], "расход посчитан")
+    ok(any("Записал тренировку" in s for s in sent), "подтверждение по тренировке")
+
+    sent, _ = asyncio.run(_free("устал, спал 5 часов",
+                                [{"category": "wellbeing", "text": "устал, спал 5 часов",
+                                  "energy": 3, "sleep_h": 5}]))
+    wb = db.get_wellbeing(FREE_UID, TODAY)
+    eq(wb["energy"], 3, "энергия записана")
+    eq(wb["sleep_h"], 5.0, "сон со слов клиента записан")
+    ok(any("самочувствие" in s.lower() for s in sent), "подтверждение по самочувствию")
+
+    sent, _ = asyncio.run(_free("принял магний",
+                                [{"category": "supplement", "text": "принял магний",
+                                  "supplement_name": "Магний"}]))
+    ok(any("Отметил приём" in s for s in sent), "приём БАДа отмечен")
+    ok(db.taken_supplements(FREE_UID, TODAY), "отметка легла в базу")
+
+    sent, _ = asyncio.run(_free("вешу 82", [{"category": "weight", "text": "вешу 82",
+                                             "weight_kg": 82}]))
+    eq(db.get_user(FREE_UID)["weight_kg"], 82.0, "вес обновлён")
+
+    sent, _ = asyncio.run(_free("спасибо!", [{"category": "other", "text": "спасибо!"}]))
+    ok(any("Не понял, что записать" in s for s in sent),
+       "болтовня ничего не выдумывает, а просит переформулировать")
+
+    sent, _ = asyncio.run(_free("что-то непонятное",
+                                [{"category": "meal", "text": "что-то непонятное",
+                                  "confidence": "низкая"}]))
+    ok(any("Не уверен, куда это записать" in s for s in sent),
+       "при низкой уверенности бот переспрашивает, а не пишет наугад")
+
+
+def test_free_input_multi():
+    uid = 7021
+    db.ensure_user(uid, "Мультизапись")
+    sent, meals = asyncio.run(_free(
+        "поел овсянку, выпил два стакана воды и устал",
+        [{"category": "meal", "text": "поел овсянку"},
+         {"category": "water", "text": "выпил два стакана воды", "ml": 500},
+         {"category": "wellbeing", "text": "устал", "energy": 3}],
+        uid=uid))
+    eq(meals, ["поел овсянку"], "еда ушла в разбор еды")
+    eq(db.water_total(uid, TODAY), 500, "вода записана из того же сообщения")
+    eq(db.get_wellbeing(uid, TODAY)["energy"], 3, "самочувствие записано из того же сообщения")
+
+
+def test_free_input_not_in_dialog():
+    """В шаге диалога роутер не должен вмешиваться."""
+    import bot as botmod
+
+    called = {"n": 0}
+
+    async def fake_route(_text):
+        called["n"] += 1
+        return []
+
+    saved = analyzer.route_entry
+    analyzer.route_entry = fake_route
+    try:
+        asyncio.run(_voice_to(botmod.LogWorkout.description, "турник, пять по восемь"))
+    finally:
+        analyzer.route_entry = saved
+    eq(called["n"], 0, "в шаге «описание тренировки» роутер не вызывается")
+
+    names = [h.callback.__name__ for h in botmod.router.message.handlers]
+    ok(names.index("lw_description") < names.index("on_text"),
+       "шаги диалога стоят раньше общего обработчика текста")
+
+
+def test_undo_any_entry():
+    uid = 7022
+    db.ensure_user(uid, "Откат")
+    asyncio.run(_free("выпил 300 мл", [{"category": "water", "text": "выпил 300 мл", "ml": 300}],
+                      uid=uid))
+    eq(db.water_total(uid, TODAY), 300, "вода записана")
+
+    import bot as botmod
+    msg = _FakeMessage(uid, 1)
+    asyncio.run(botmod.cmd_undo(msg))
+    eq(db.water_total(uid, TODAY), 0, "/undo откатил воду, а не только еду")
+    ok(any("Убрал" in s for s in msg.sent), "человеку сказали, что убрали")
+
+    msg2 = _FakeMessage(uid, 1)
+    asyncio.run(botmod.cmd_undo(msg2))
+    ok(any("удалять нечего" in s for s in msg2.sent), "повторный /undo не падает")
+
+
+def test_free_input_in_greeting():
+    import bot as botmod
+    phrase = "наговори или напиши"
+    ok(phrase in botmod.HELP_TEXT.lower(), "в /help свободный ввод стоит первым делом")
+    greeting = botmod.coach_greeting({"name": "Николай", "brand": "Челлендж"}, "Михаил")
+    ok(phrase in greeting.lower(), "в приветствии клиента фраза про свободный ввод есть")
+    ok("команды не обязательны" in greeting.lower(), "проговорено, что команды не нужны")
+    ok("Чек" not in greeting, "в брендовом приветствии платформа не упоминается")
+    ok(greeting.lower().index(phrase) < greeting.lower().index("а ещё умею"),
+       "свободный ввод стоит выше списка команд")
+
+
 # ------------------------------------------------- маршрутизация команд в диалогах
 
 
@@ -1839,6 +2069,8 @@ def main() -> int:
 
     print("- db: пользователи и настройки")
     test_users()
+    print("- тесты офлайн: ИИ-провайдер выключен")
+    test_offline_by_default()
     print("- db: режим WAL")
     test_wal_mode()
     print("- db: еда и суммы за день")
@@ -1932,6 +2164,18 @@ def main() -> int:
     test_voice_goes_to_workout_description()
     print("- голос: внутри других диалогов")
     test_voice_inside_other_dialog()
+    print("- роутер: разбор свободного текста")
+    test_router_normalize()
+    print("- свободный ввод: запись по рубрикам")
+    test_free_input_dispatch()
+    print("- свободный ввод: несколько рубрик из одного сообщения")
+    test_free_input_multi()
+    print("- свободный ввод: не вмешивается в диалоги")
+    test_free_input_not_in_dialog()
+    print("- /undo откатывает любую запись")
+    test_undo_any_entry()
+    print("- приветствие: свободный ввод на первом плане")
+    test_free_input_in_greeting()
     print("- анонс: кому уходит")
     test_announce_plan()
     print("- анонс: рассылка, блокировки, лимиты")

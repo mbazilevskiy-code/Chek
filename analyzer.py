@@ -641,3 +641,170 @@ async def analyze_meal(
     else:
         data = await _analyze_anthropic(image_bytes, media_type, user_text)
     return _normalize(data)
+
+
+# ---------------------------------------------------------------- роутер свободного ввода
+
+ROUTER_SYSTEM = """Ты — диспетчер дневника здоровья. Человек пишет или наговаривает свободным \
+текстом, что с ним происходит. Твоя задача — разложить сообщение по рубрикам дневника и \
+вытащить числа. Ничего не советуй и не оценивай: только разбор и извлечение фактов.
+
+Рубрики:
+- meal — съел или выпил что-то калорийное (еда, кофе с молоком, сок, алкоголь).
+- water — выпил простой воды. Переведи в миллилитры: стакан ~250, кружка ~300, бутылка ~500.
+- workout — тренировался: во сколько (ЧЧ:ММ), сколько минут, что именно делал.
+- wellbeing — самочувствие: энергия, настроение, стресс по шкале 1-10 и сколько часов спал. \
+Ставь ТОЛЬКО то, о чём человек сказал: «устал» — это энергия около 3, «выспался и бодрый» — \
+энергия около 8, «нервный день» — стресс около 7. Не придумывай недостающие оценки.
+- supplement — принял добавку, витамин или БАД: название.
+- weight — назвал свой вес в килограммах.
+- other — болтовня, вопрос, благодарность, непонятное.
+
+В одном сообщении может быть несколько рубрик: «поел овсянку, выпил два стакана воды и \
+устал» — это три записи: meal, water, wellbeing. Разбивай.
+
+В поле text каждой записи положи фрагмент исходного сообщения, к которому она относится — \
+дословно, не пересказывай. Если не уверен, к чему относится сообщение, ставь other: \
+выдумывать записи нельзя, лучше переспросить у человека."""
+
+_ENTRY_CATEGORIES = ["meal", "water", "workout", "wellbeing", "supplement", "weight", "other"]
+
+ENTRY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "entries": {
+            "type": "array",
+            "description": "Записи дневника из этого сообщения",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": _ENTRY_CATEGORIES},
+                    "text": {"type": "string", "description": "Фрагмент сообщения дословно"},
+                    "confidence": {"type": "string", "enum": ["низкая", "средняя", "высокая"]},
+                    "ml": {"type": "number", "description": "water: миллилитры"},
+                    "time": {"type": "string", "description": "workout: ЧЧ:ММ, если названо"},
+                    "duration_min": {"type": "number", "description": "workout: минуты"},
+                    "description": {"type": "string", "description": "workout: что делал"},
+                    "energy": {"type": "integer", "description": "wellbeing: 1-10"},
+                    "mood": {"type": "integer", "description": "wellbeing: 1-10"},
+                    "stress": {"type": "integer", "description": "wellbeing: 1-10"},
+                    "sleep_h": {"type": "number", "description": "wellbeing: часов сна"},
+                    "supplement_name": {"type": "string"},
+                    "weight_kg": {"type": "number"},
+                },
+                "required": ["category", "text"],
+            },
+        }
+    },
+    "required": ["entries"],
+}
+
+ENTRY_TOOL = {
+    "name": "classify_entries",
+    "description": "Разбор свободного сообщения по рубрикам дневника",
+    "input_schema": ENTRY_SCHEMA,
+}
+
+
+def _scale(value) -> int | None:
+    """Оценка по шкале 1-10 или None."""
+    n = int(_f(value))
+    return max(1, min(10, n)) if n else None
+
+
+def _normalize_entries(data: dict) -> list[dict]:
+    """Приводит ответ модели к безопасному виду. Мусорные записи выбрасываем."""
+    out = []
+    for raw in (data or {}).get("entries") or []:
+        if not isinstance(raw, dict):
+            continue
+        cat = str(raw.get("category") or "other").strip().lower()
+        if cat not in _ENTRY_CATEGORIES:
+            cat = "other"
+        conf = raw.get("confidence")
+        entry = {
+            "category": cat,
+            "text": str(raw.get("text") or "").strip()[:500],
+            "confidence": conf if conf in ("низкая", "средняя", "высокая") else "средняя",
+        }
+
+        if cat == "water":
+            ml = int(_f(raw.get("ml")))
+            if ml <= 0:
+                continue
+            entry["ml"] = max(10, min(5000, ml))
+        elif cat == "workout":
+            minutes = int(_f(raw.get("duration_min")))
+            entry["duration_min"] = minutes if 1 <= minutes <= 600 else None
+            entry["time"] = str(raw.get("time") or "").strip()[:5] or None
+            entry["description"] = str(raw.get("description") or "").strip()[:500]
+        elif cat == "wellbeing":
+            for key in ("energy", "mood", "stress"):
+                entry[key] = _scale(raw.get(key))
+            hours = _f(raw.get("sleep_h"))
+            entry["sleep_h"] = round(hours, 1) if 0 < hours <= 24 else None
+            if not any(entry.get(k) for k in ("energy", "mood", "stress", "sleep_h")):
+                continue          # «самочувствие» без единой оценки писать некуда
+        elif cat == "supplement":
+            name = str(raw.get("supplement_name") or entry["text"]).strip()[:80]
+            if not name:
+                continue
+            entry["supplement_name"] = name
+        elif cat == "weight":
+            kg = _f(raw.get("weight_kg"))
+            if not 20 <= kg <= 400:
+                continue
+            entry["weight_kg"] = round(kg, 1)
+
+        out.append(entry)
+    return out
+
+
+async def _route_anthropic(text: str) -> dict:
+    resp = await _client().messages.create(
+        model=config.MODEL,
+        max_tokens=1200,
+        system=ROUTER_SYSTEM,
+        tools=[ENTRY_TOOL],
+        tool_choice={"type": "tool", "name": "classify_entries"},
+        messages=[{"role": "user", "content": text}],
+    )
+    data = _extract_tool_input_named(resp, "classify_entries")
+    if data is None:
+        raise RuntimeError("роутер не вернул структурированный ответ")
+    return data
+
+
+async def _route_openrouter(text: str) -> dict:
+    system = (ROUTER_SYSTEM
+              + "\n\nОтветь ОДНИМ валидным JSON-объектом без markdown, строго по схеме:\n"
+              + json.dumps(ENTRY_SCHEMA, ensure_ascii=False))
+    headers = {"Authorization": f"Bearer {config.OPENROUTER_API_KEY}", "X-Title": "Food Chek Bot"}
+    timeout = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        model = config.OPENROUTER_MODEL
+        if model == "auto":
+            model = await _pick_free_vision_model(session)
+        body = {
+            "model": model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": text}],
+            "max_tokens": 1200,
+            "temperature": 0,
+        }
+        return _extract_json(await _or_chat(session, body))
+
+
+async def route_entry(text: str) -> list[dict]:
+    """Свободный текст → записи дневника. Пустой список — записывать нечего."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    provider = config.ACTIVE_PROVIDER
+    if provider == "demo":
+        raise DemoModeError()
+    if provider == "openrouter":
+        data = await _route_openrouter(text)
+    else:
+        data = await _route_anthropic(text)
+    return _normalize_entries(data)
