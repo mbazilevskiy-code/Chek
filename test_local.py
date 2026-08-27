@@ -28,6 +28,7 @@ import analyzer         # noqa: E402
 import config           # noqa: E402
 import db               # noqa: E402
 import nutrition        # noqa: E402
+import oura as oura_mod  # noqa: E402
 import web_dashboard    # noqa: E402
 
 # ---------------------------------------------------------------- каркас
@@ -1214,9 +1215,255 @@ def test_workout_log():
        "заслон от команд раньше шагов записи")
 
 
+OURA_UID = 9009
+AUTO_UID = 9010
+
+
+def _oura_payloads(day: str) -> dict:
+    return {
+        "daily_readiness": [{"day": day, "score": 82}],
+        "daily_sleep": [{"day": day, "score": 77}],
+        "daily_activity": [{"day": day, "score": 88, "steps": 9400,
+                            "active_calories": 520, "total_calories": 2600,
+                            "equivalent_walking_distance": 7200,
+                            "high_activity_minutes": 12, "medium_activity_minutes": 30,
+                            "low_activity_minutes": 120}],
+        "sleep": [{"day": day, "total_sleep_duration": 26640, "deep_sleep_duration": 5400,
+                   "rem_sleep_duration": 6300, "light_sleep_duration": 14940,
+                   "efficiency": 91, "average_breath": 14.2, "average_hrv": 62,
+                   "lowest_heart_rate": 49, "average_heart_rate": 56}],
+        "daily_spo2": [{"day": day, "spo2_percentage": {"average": 96.4}}],
+        "daily_stress": [{"day": day, "stress_high": 5400, "day_summary": "normal"}],
+        "daily_resilience": [{"day": day, "level": "solid"}],
+        "daily_cardiovascular_age": [{"day": day, "vascular_age": 31}],
+        "vO2_max": [{"day": day, "vo2_max": 44.7}],
+        "sleep_time": [{"day": day, "recommendation": "earlier_bedtime", "status": "optimal"}],
+        "workout": [
+            {"id": "w-1", "day": day, "activity": "calisthenics", "calories": 310,
+             "distance": 0, "intensity": "moderate",
+             "start_datetime": f"{day}T18:20:00+03:00", "end_datetime": f"{day}T19:05:00+03:00"},
+            {"id": "w-2", "day": day, "activity": "walking", "calories": 90,
+             "distance": 2400, "intensity": "easy",
+             "start_datetime": f"{day}T08:00:00+03:00", "end_datetime": f"{day}T08:30:00+03:00"},
+        ],
+    }
+
+
+async def _run_oura_fetch(uid: int, payloads: dict) -> int:
+    """Прогон fetch_and_store с подменённым HTTP-слоем — наружу ничего не уходит."""
+    async def fake_get(session, token, path, params):
+        return payloads.get(path, [])
+
+    async def fake_token(_uid):
+        return "test-token"
+
+    saved_get, saved_token = oura_mod._get, oura_mod._valid_token
+    oura_mod._get, oura_mod._valid_token = fake_get, fake_token
+    try:
+        return await oura_mod.fetch_and_store(uid, days=1)
+    finally:
+        oura_mod._get, oura_mod._valid_token = saved_get, saved_token
+
+
+def test_oura_full_fetch():
+    got = asyncio.run(_run_oura_fetch(OURA_UID, _oura_payloads(TODAY)))
+    eq(got, 1, "данные за день сохранены")
+
+    row = db.oura_range(OURA_UID, [TODAY])[TODAY]
+    eq(row["readiness"], 82, "готовность")
+    eq(row["sleep_score"], 77, "оценка сна")
+    eq(row["sleep_h"], 7.4, "длительность сна из секунд")
+    eq(row["deep_h"], 1.5, "глубокий сон")
+    eq(row["rem_h"], 1.8, "REM-фаза")
+    eq(row["light_h"], 4.2, "лёгкий сон")
+    eq(row["sleep_efficiency"], 91, "эффективность сна")
+    eq(row["breath_avg"], 14.2, "частота дыхания")
+    eq(row["hrv"], 62, "HRV")
+    eq(row["resting_hr"], 49, "пульс покоя — минимальный за ночь")
+    eq(row["activity_score"], 88, "оценка активности")
+    eq(row["steps"], 9400, "шаги")
+    eq(row["active_kcal"], 520, "активные калории")
+    eq(row["total_kcal"], 2600, "калории всего")
+    eq(row["distance_m"], 7200, "дистанция")
+    eq(row["active_min"], 162, "минуты активности суммируются")
+    eq(row["spo2_avg"], 96.4, "SpO2")
+    eq(row["stress_high_min"], 90, "высокий стресс из секунд в минуты")
+    eq(row["stress_summary"], "normal", "итог дня по стрессу")
+    eq(row["resilience"], "solid", "устойчивость")
+    eq(row["cardio_age"], 31, "кардио-возраст")
+    eq(row["vo2_max"], 44.7, "VO2max")
+    ok("sleep_time" in (row["extra_json"] or ""), "необработанное поле легло в extra_json")
+
+    wos = db.oura_workouts_for_date(OURA_UID, TODAY)
+    eq(len(wos), 2, "обе тренировки кольца сохранены")
+    eq(wos[0]["calories"], 310, "самая «дорогая» тренировка первой")
+    eq(wos[0]["intensity"], "moderate", "интенсивность сохранена")
+
+    asyncio.run(_run_oura_fetch(OURA_UID, _oura_payloads(TODAY)))
+    eq(len(db.oura_workouts_for_date(OURA_UID, TODAY)), 2,
+       "повторный забор не плодит копии (дедуп по oura_id)")
+    eq(len(db.oura_workouts_range(OURA_UID, [TODAY, day(1)])), 2, "выборка за окно")
+    eq(db.oura_workouts_range(OURA_UID, []), [], "пустое окно — пусто")
+
+
+def test_oura_partial_fetch():
+    """Премиальных эндпоинтов может не быть — забор всё равно должен пройти."""
+    uid = 9011
+    got = asyncio.run(_run_oura_fetch(uid, {"daily_readiness": [{"day": TODAY, "score": 70}]}))
+    eq(got, 1, "день сохранён даже без остальных источников")
+    row = db.oura_range(uid, [TODAY])[TODAY]
+    eq(row["readiness"], 70, "то, что пришло, сохранено")
+    eq(row["spo2_avg"], None, "чего нет в тарифе — осталось пустым")
+    eq(row["vo2_max"], None, "VO2max пустой")
+    eq(row["sleep_h"], None, "сна нет — поле пустое")
+    eq(db.oura_workouts_for_date(uid, TODAY), [], "тренировок кольца нет")
+
+    empty = asyncio.run(_run_oura_fetch(9012, {}))
+    eq(empty, 0, "совсем пустой ответ не роняет забор")
+
+
+def test_oura_autofill():
+    import bot as botmod
+
+    db.save_oura_tokens(AUTO_UID, "a", "r", 9_000_000_000.0)
+    db.upsert_oura_workout(AUTO_UID, {
+        "oura_id": "auto-1", "day": TODAY, "activity": "calisthenics",
+        "intensity": "moderate", "calories": 310, "distance": 0,
+        "start": f"{TODAY}T18:20:00+03:00", "end": f"{TODAY}T19:05:00+03:00"})
+
+    cand = botmod._oura_candidate(AUTO_UID, TODAY)
+    ok(cand is not None, "кандидат из кольца найден")
+    eq(cand["time"], "18:20", "время подставляется из кольца")
+    eq(cand["minutes"], 45, "длительность считается из интервала")
+    eq(cand["calories"], 310, "расход берётся из кольца")
+
+    db.add_workout_log(AUTO_UID, TODAY, "18:20", "done", note="train",
+                       duration_min=45, kcal_burned=310, kcal_source="oura")
+    ok(botmod._oura_candidate(AUTO_UID, TODAY) is None,
+       "уже записанную тренировку повторно не предлагаем")
+    ok(botmod._oura_candidate(WO_UID, TODAY) is None, "без кольца кандидата нет")
+
+    labels = [b.text for row in botmod.OURA_TRAIN_KB.inline_keyboard for b in row]
+    ok(any("Записать её" in x for x in labels), "есть кнопка подтверждения из кольца")
+    ok(any("вручную" in x for x in labels), "есть кнопка ручного ввода")
+    ok(any("Не тренировался" in x for x in labels), "есть кнопка пропуска")
+
+    eq(oura_mod.workout_duration_min({"start": None, "end": None}), None,
+       "без времени длительность не считаем")
+    eq(oura_mod.workout_time({}), None, "без начала времени нет")
+
+
+def test_oura_in_cabinet():
+    db.ensure_user(OURA_UID, "Клиент с кольцом")
+    o = web_dashboard.client_detail(OURA_UID, days=7)["oura"]
+    ok(o is not None, "блок кольца собран для кабинета")
+    eq(o["avg"]["sleep_efficiency"], 91, "эффективность сна в средних")
+    eq(o["avg"]["spo2_avg"], 96.4, "SpO2 в средних")
+    eq(o["avg"]["active_kcal"], 520, "активные калории в средних")
+    eq(o["avg"]["deep_h"], 1.5, "фазы сна в средних")
+    eq(o["avg"]["vo2_max"], 44.7, "VO2max в средних")
+    eq(o["latest"]["resilience"], "solid", "устойчивость в последнем дне")
+    eq(o["latest"]["stress_summary"], "normal", "итог по стрессу в последнем дне")
+    eq(len(o["workouts"]), 2, "тренировки кольца доехали до тренера")
+    eq(o["workouts"][0]["activity"], "calisthenics", "тип тренировки")
+
+
+def test_workout_kcal_estimate():
+    eq(nutrition.workout_kcal_estimate(80, 40), 320, "MET 6 × 80 кг × 40 мин → 320 ккал")
+    eq(nutrition.workout_kcal_estimate(None, 40), 300, "без веса берём 75 кг → 300 ккал")
+    eq(nutrition.workout_kcal_estimate(0, 40), 300, "нулевой вес — тоже запасные 75 кг")
+    eq(nutrition.workout_kcal_estimate(80, 60), 480, "час при 80 кг → 480 ккал")
+    eq(nutrition.workout_kcal_estimate(60, 30), 180, "полчаса при 60 кг → 180 ккал")
+    ok(nutrition.workout_kcal_estimate(80, 40) > nutrition.workout_kcal_estimate(60, 40),
+       "тяжелее клиент — больше расход")
+
+
+def test_oura_workout_match():
+    rows = [
+        {"activity": "calisthenics", "calories": 310,
+         "start": "2026-08-27T18:20:00+03:00", "end": "2026-08-27T19:05:00+03:00"},
+        {"activity": "walking", "calories": 90,
+         "start": "2026-08-27T08:00:00+03:00", "end": "2026-08-27T08:30:00+03:00"},
+    ]
+    hit = oura_mod.match_workout(rows, "18:30", 40)
+    eq(hit["calories"], 310, "берём тренировку, пересекающуюся по времени")
+    eq(oura_mod.match_workout(rows, "08:10", 30)["calories"], 90, "утренняя выбирается утром")
+    eq(oura_mod.match_workout(rows, "12:00", 30), None, "нет пересечения — нет совпадения")
+    eq(oura_mod.match_workout([], "18:30", 40), None, "пустой список — None")
+    eq(oura_mod.match_workout(rows, "чепуха", 40), None, "кривое время — None")
+    eq(oura_mod.match_workout([{"calories": 100, "start": None, "end": None}], "18:30", 40), None,
+       "запись без времени пропускается")
+
+
+async def _kcal_with_oura():
+    import bot as botmod
+
+    async def fake_fetch(uid, date):
+        return [
+            {"activity": "calisthenics", "calories": 310,
+             "start": f"{date}T18:20:00+03:00", "end": f"{date}T19:05:00+03:00"},
+            {"activity": "walking", "calories": 90,
+             "start": f"{date}T08:00:00+03:00", "end": f"{date}T08:30:00+03:00"},
+        ]
+
+    saved_fetch, saved_flag = botmod.oura_mod.fetch_workouts, config.OURA_ENABLED
+    botmod.oura_mod.fetch_workouts = fake_fetch
+    config.OURA_ENABLED = True
+    try:
+        return await botmod._workout_kcal(UID, TODAY, "18:30", 40)
+    finally:
+        botmod.oura_mod.fetch_workouts = saved_fetch
+        config.OURA_ENABLED = saved_flag
+
+
+async def _kcal_without_oura():
+    import bot as botmod
+    saved = config.OURA_ENABLED
+    config.OURA_ENABLED = False
+    try:
+        return await botmod._workout_kcal(WO_UID, TODAY, "18:30", 40)
+    finally:
+        config.OURA_ENABLED = saved
+
+
+def test_workout_kcal_source():
+    import bot as botmod
+
+    ok(db.oura_connected(UID), "у владельца кольцо подключено (нужно для теста)")
+    kcal, source = asyncio.run(_kcal_with_oura())
+    eq(source, "oura", "при совпадении с тренировкой кольца источник — oura")
+    eq(kcal, 310, "берём число расхода из кольца")
+
+    kcal, source = asyncio.run(_kcal_without_oura())
+    eq(source, "estimate", "без кольца источник — оценка")
+    eq(kcal, 300, "оценка считается по весу и времени (75 кг по умолчанию)")
+
+    # Кольцо есть, но подходящей тренировки в нём нет — падаем в оценку
+    async def empty_fetch(uid, date):
+        return []
+
+    saved_fetch, saved_flag = botmod.oura_mod.fetch_workouts, config.OURA_ENABLED
+    botmod.oura_mod.fetch_workouts = empty_fetch
+    config.OURA_ENABLED = True
+    try:
+        kcal, source = asyncio.run(botmod._workout_kcal(UID, TODAY, "18:30", 40))
+    finally:
+        botmod.oura_mod.fetch_workouts = saved_fetch
+        config.OURA_ENABLED = saved_flag
+    eq(source, "estimate", "нет совпадения в кольце — оценка")
+    eq(kcal, 320, "оценка по весу владельца (80 кг)")
+
+    db.add_workout_log(WO_UID, day(3), "07:00", "done", note="train", duration_min=30,
+                       description="брусья", kcal_burned=225, kcal_source="estimate")
+    w = db.workout_for_date(WO_UID, day(3))
+    eq(w["kcal_burned"], 225, "расход сохранён в базе")
+    eq(w["kcal_source"], "estimate", "источник расхода сохранён в базе")
+
+
 def test_workouts_in_cabinet():
     db.add_workout_log(CLIENT_UID, day(2), "07:30", "done", note="train",
-                       duration_min=55, description="брусья и пресс")
+                       duration_min=55, description="брусья и пресс",
+                       kcal_burned=330, kcal_source="estimate")
     d = web_dashboard.client_detail(CLIENT_UID, days=7)
     w = d["workouts"]
     ok(w is not None, "блок тренировок в карточке клиента")
@@ -1229,8 +1476,14 @@ def test_workouts_in_cabinet():
     eq(byd[day(2)]["time"], "07:30", "время доехало до тренера")
 
     txt = web_dashboard.week_data_text(CLIENT_UID)
+    eq(w["kcal_burned"], 330, "суммарный расход за окно")
+    eq(byd[day(2)]["kcal_burned"], 330, "расход по тренировке доехал до тренера")
+    eq(byd[day(2)]["kcal_source"], "estimate", "источник числа доехал до тренера")
+
     ok("55 мин" in txt, "в брифе тренеру есть длительность тренировки")
     ok("брусья и пресс" in txt, "в брифе тренеру есть описание тренировки")
+    ok("расход ~330 ккал (оценка)" in txt, "в брифе расход помечен как расход и как оценка")
+    ok("330" not in str(d["targets"]["kcal"]), "расход не подмешан в цели по еде")
 
     empty = web_dashboard.client_detail(PLAN_UID, days=7)["workouts"]
     ok(empty is None, "у клиента без тренировок блока нет")
@@ -1489,6 +1742,20 @@ def main() -> int:
     test_onboarding_lists_features()
     print("- тренировки: лог вместо генерации")
     test_workout_log()
+    print("- Oura: полный забор всех эндпоинтов")
+    test_oura_full_fetch()
+    print("- Oura: пустые премиум-эндпоинты не роняют забор")
+    test_oura_partial_fetch()
+    print("- Oura: автозаполнение тренировки")
+    test_oura_autofill()
+    print("- Oura: расширенный блок тренеру")
+    test_oura_in_cabinet()
+    print("- тренировки: оценка расхода калорий")
+    test_workout_kcal_estimate()
+    print("- тренировки: совпадение с Oura")
+    test_oura_workout_match()
+    print("- тренировки: источник расхода (Oura / оценка)")
+    test_workout_kcal_source()
     print("- тренировки: длительность и описание тренеру")
     test_workouts_in_cabinet()
     print("- переключатель /aitips")

@@ -147,6 +147,13 @@ table.roster{width:100%;border-collapse:collapse;font-size:.92rem;background:var
 .wk b.zero{color:var(--muted)}
 .stale{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
   padding:9px 12px;margin-bottom:11px;color:var(--ink-2);font-size:.84rem}
+/* ---- блок кольца Oura ---- */
+.ogrid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.ogrid .k{font-size:.78rem;font-weight:650;color:var(--ink-2);margin-bottom:4px}
+.orow{display:flex;justify-content:space-between;gap:10px;font-size:.85rem;
+  padding:3px 0;border-bottom:1px solid var(--grid)}
+.orow b{font-variant-numeric:tabular-nums;font-weight:600}
+@media (max-width:920px){.ogrid{grid-template-columns:repeat(2,1fr)}}
 /* ---- что ел: дневник по дням с раскрытием состава ---- */
 .food{display:flex;flex-direction:column;gap:8px}
 .food details{border:1px solid var(--line);border-radius:10px;background:var(--surface-2);overflow:hidden}
@@ -423,20 +430,74 @@ function renderDetail(uid,s,p){
     if(s.wellbeing.latest&&s.wellbeing.latest.note)wbHtml+=`<p class="cap" style="margin-top:10px">Заметка: «${esc(s.wellbeing.latest.note)}»</p>`;
   }else wbHtml=`<div class="nodata">Данных нет — клиент не отмечал самочувствие</div>`;
 
+  // кольцо Oura: показываем всё, что удалось собрать; пустое — «Данных нет»
+  let ouraHtml,ouraHead="";
+  if(s.oura){
+    const a=s.oura.avg||{},L=s.oura.latest||{};
+    const val=(v,unit,dec)=>v==null?null:`${dec?rub(v):fmt(Math.round(v))}${unit||""}`;
+    const group=(title,rows)=>{
+      const got=rows.filter(r=>r[1]!=null);
+      if(!got.length)return `<div><div class="k">${title}</div><div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div></div>`;
+      return `<div><div class="k">${title}</div>${got.map(r=>
+        `<div class="orow"><span>${r[0]}</span><b>${r[1]}</b></div>`).join("")}</div>`;
+    };
+    ouraHead=`<span class="src">ср. ${cap}</span>`;
+    ouraHtml=`<div class="ogrid">
+      ${group("😴 Сон",[
+        ["Длительность",val(a.sleep_h," ч",1)],["Эффективность",val(a.sleep_efficiency,"%")],
+        ["Глубокий",val(a.deep_h," ч",1)],["REM",val(a.rem_h," ч",1)],["Лёгкий",val(a.light_h," ч",1)],
+        ["Оценка сна",val(a.sleep_score,"")]])}
+      ${group("❤️ Показатели",[
+        ["HRV",val(a.hrv," мс")],["Пульс покоя",val(a.resting_hr," уд/мин")],
+        ["Дыхание",val(a.breath_avg,"/мин",1)],["SpO₂",val(a.spo2_avg,"%",1)],
+        ["Температура",a.temp_dev==null?null:`${rub(a.temp_dev)} °C`]])}
+      ${group("🏃 Активность",[
+        ["Готовность",val(a.readiness,"")],["Оценка активности",val(a.activity_score,"")],
+        ["Шаги",val(a.steps,"")],["Активные ккал",val(a.active_kcal,"")],
+        ["Всего ккал",val(a.total_kcal,"")],
+        ["Дистанция",a.distance_m==null?null:`${rub(Math.round(a.distance_m/100)/10)} км`],
+        ["Минут активности",val(a.active_min,"")]])}
+      ${group("🧠 Стресс и форма",[
+        ["Стресс, высокий",val(a.stress_high_min," мин")],
+        ["Итог дня",L.stress_summary?esc(L.stress_summary):null],
+        ["Устойчивость",L.resilience?esc(L.resilience):null],
+        ["VO₂max",val(a.vo2_max,"",1)],["Кардио-возраст",val(a.cardio_age," лет")]])}
+    </div>`;
+    const ow=s.oura.workouts||[];
+    ouraHtml+=ow.length?`<div class="k" style="margin-top:12px">🏃 Тренировки с кольца</div>
+      <div class="supp">${ow.map(w=>{
+        const day=new Date(w.day+"T00:00:00").toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"});
+        const kc=w.calories?` · ${fmt(w.calories)} ккал`:"";
+        const di=w.distance?` · ${rub(Math.round(w.distance/100)/10)} км`:"";
+        return `<div class="supp-row"><span class="box on">✓</span>
+          <span>${day} · ${esc(w.activity||"тренировка")}${kc}${di}</span>
+          ${w.intensity?`<span class="tm">${esc(w.intensity)}</span>`:""}</div>`;
+      }).join("")}</div>`
+      :`<div class="k" style="margin-top:12px">🏃 Тренировки с кольца</div>
+        <div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div>`;
+  }else ouraHtml=`<div class="nodata">Данных нет — кольцо не подключено</div>`;
+
   // тренировки: клиент фиксирует их сам — показываем как есть
   let woHtml,woHead="";
   const wo=s.workouts;
   if(wo&&wo.list.length){
     const h=Math.floor(wo.minutes/60),mm=wo.minutes%60;
     woHead=`<span class="src">${wo.done} ${plural(wo.done,"тренировка","тренировки","тренировок")}`
-      +(wo.minutes?` · ${h?h+" ч ":""}${mm?mm+" мин":""}`:"")+`</span>`;
+      +(wo.minutes?` · ${h?h+" ч ":""}${mm?mm+" мин":""}`:"")
+      +(wo.kcal_burned?` · ${fmt(wo.kcal_burned)} ккал расход`:"")+`</span>`;
     woHtml=`<div class="supp">${wo.list.map(w=>{
       const done=w.status==="done";
       const dur=w.duration_min?` · ${w.duration_min} мин`:"";
+      // расход держим отдельно от съеденного и помечаем, откуда число
+      const kc=w.kcal_burned
+        ? ` · <b title="${w.kcal_source==="oura"?"с кольца Oura":"оценка по весу и времени"}">`
+          +`${w.kcal_source==="oura"?"":"≈"}${fmt(w.kcal_burned)} ккал</b>`
+          +`<span class="tm" style="margin:0 0 0 4px">${w.kcal_source==="oura"?"Oura":"оценка"}</span>`
+        : "";
       const day=new Date(w.date+"T00:00:00").toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"});
       return `<div class="supp-row">
         <span class="box ${done?'on':'off'}">${done?'✓':'—'}</span>
-        <span>${day}${done&&w.time?" · "+esc(w.time):""}${dur}${w.description?" · "+esc(w.description):""}</span>
+        <span>${day}${done&&w.time?" · "+esc(w.time):""}${dur}${kc}${w.description?" · "+esc(w.description):""}</span>
         ${done?"":'<span class="tm">не тренировался</span>'}</div>`;
     }).join("")}</div>`;
   }else woHtml=`<div class="nodata">Данных нет — клиент не записывал тренировки ${cap}</div>`;
@@ -536,6 +597,8 @@ function renderDetail(uid,s,p){
     <div class="tiles">${tiles.join("")}</div>
     <div class="card"><h3>${isDay?"Сегодня":"Динамика "+cap} <span class="src">${s.oura?'Oura + бот':'бот'}</span></h3>
       <p class="cap">${dynCap}</p>${dynHtml}</div>
+    <div class="card"><h3>💍 Кольцо Oura ${ouraHead}</h3>
+      <p class="cap">Сон, активность и показатели ${cap}</p>${ouraHtml}</div>
     <div class="card"><h3>🏋️ Тренировки ${woHead}</h3>
       <p class="cap">Что клиент записал сам: время, длительность, что делал</p>${woHtml}</div>
     <div class="card"><h3>🍽 Что ел ${foodHead}</h3>

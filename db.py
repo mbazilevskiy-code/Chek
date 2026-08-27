@@ -142,6 +142,19 @@ CREATE TABLE IF NOT EXISTS oura_daily (
     PRIMARY KEY (user_id, date)
 );
 
+CREATE TABLE IF NOT EXISTS oura_workouts (
+    oura_id   TEXT PRIMARY KEY,        -- id из Oura: по нему дедуп
+    user_id   INTEGER NOT NULL,
+    day       TEXT NOT NULL,
+    start_dt  TEXT,
+    end_dt    TEXT,
+    activity  TEXT,
+    intensity TEXT,
+    calories  INTEGER,
+    distance  REAL
+);
+CREATE INDEX IF NOT EXISTS idx_oura_wo_user_day ON oura_workouts(user_id, day);
+
 CREATE TABLE IF NOT EXISTS coaches (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     bot_token     TEXT UNIQUE NOT NULL,
@@ -185,6 +198,31 @@ _SUPPL_COLUMNS = {
 _WORKOUT_COLUMNS = {
     "duration_min": "INTEGER",
     "description": "TEXT",
+    "kcal_burned": "INTEGER",
+    "kcal_source": "TEXT",   # oura | estimate
+}
+
+# Новые колонки oura_daily: собираем с кольца максимум, что отдаёт API.
+# Чего нет в тарифе — просто остаётся пустым; extra_json — задел на будущее.
+_OURA_BASE_COLS = ["readiness", "sleep_score", "sleep_h", "hrv", "resting_hr",
+                   "temp_dev", "activity_score", "steps"]
+_OURA_COLUMNS = {
+    "sleep_efficiency": "INTEGER",
+    "breath_avg": "REAL",
+    "deep_h": "REAL",
+    "rem_h": "REAL",
+    "light_h": "REAL",
+    "spo2_avg": "REAL",
+    "active_kcal": "INTEGER",
+    "total_kcal": "INTEGER",
+    "distance_m": "INTEGER",
+    "active_min": "INTEGER",
+    "stress_high_min": "INTEGER",
+    "stress_summary": "TEXT",
+    "resilience": "TEXT",
+    "cardio_age": "INTEGER",
+    "vo2_max": "REAL",
+    "extra_json": "TEXT",
 }
 
 # Новые колонки coaches. По умолчанию бот тренера клиенту не советует
@@ -224,6 +262,10 @@ def init_db() -> None:
         for col, ddl in _WORKOUT_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE workout_log ADD COLUMN {col} {ddl}")
+        have = {r["name"] for r in c.execute("PRAGMA table_info(oura_daily)").fetchall()}
+        for col, ddl in _OURA_COLUMNS.items():
+            if col not in have:
+                c.execute(f"ALTER TABLE oura_daily ADD COLUMN {col} {ddl}")
 
 
 # ---------- настройки ----------
@@ -676,8 +718,7 @@ def oura_users() -> list[int]:
 
 
 def upsert_oura_daily(user_id: int, date: str, **fields) -> None:
-    cols = ["readiness", "sleep_score", "sleep_h", "hrv", "resting_hr",
-            "temp_dev", "activity_score", "steps"]
+    cols = _OURA_BASE_COLS + list(_OURA_COLUMNS)
     fields = {k: v for k, v in fields.items() if k in cols and v is not None}
     with _conn() as c:
         c.execute("INSERT OR IGNORE INTO oura_daily(user_id, date) VALUES(?, ?)", (user_id, date))
@@ -702,6 +743,57 @@ def oura_range(user_id: int, dates: list[str]) -> dict[str, dict]:
             d.pop("user_id", None)
             out[r["date"]] = d
         return out
+
+
+def upsert_oura_workout(user_id: int, rec: dict) -> None:
+    """Тренировка с кольца. Дедуп по oura_id: повторный забор не плодит копии."""
+    if not rec.get("oura_id") or not rec.get("day"):
+        return
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO oura_workouts(oura_id, user_id, day, start_dt, end_dt, activity, "
+            "intensity, calories, distance) VALUES(?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(oura_id) DO UPDATE SET day=excluded.day, start_dt=excluded.start_dt, "
+            "end_dt=excluded.end_dt, activity=excluded.activity, intensity=excluded.intensity, "
+            "calories=excluded.calories, distance=excluded.distance",
+            (str(rec["oura_id"]), user_id, rec["day"], rec.get("start"), rec.get("end"),
+             rec.get("activity"), rec.get("intensity"), rec.get("calories"), rec.get("distance")),
+        )
+
+
+def _oura_workout_rows(rows) -> list[dict]:
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["start"] = d.pop("start_dt", None)
+        d["end"] = d.pop("end_dt", None)
+        d.pop("user_id", None)
+        out.append(d)
+    return out
+
+
+def oura_workouts_for_date(user_id: int, day: str) -> list[dict]:
+    """Тренировки кольца за дату — самая «дорогая» первой."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM oura_workouts WHERE user_id = ? AND day = ? "
+            "ORDER BY COALESCE(calories, 0) DESC, start_dt",
+            (user_id, day),
+        ).fetchall()
+    return _oura_workout_rows(rows)
+
+
+def oura_workouts_range(user_id: int, dates: list[str]) -> list[dict]:
+    if not dates:
+        return []
+    marks = ",".join("?" for _ in dates)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT * FROM oura_workouts WHERE user_id = ? AND day IN ({marks}) "
+            f"ORDER BY day DESC, start_dt DESC",
+            (user_id, *dates),
+        ).fetchall()
+    return _oura_workout_rows(rows)
 
 
 def oura_latest(user_id: int) -> dict | None:
@@ -818,12 +910,14 @@ def get_workout_plan(user_id: int) -> list[dict]:
 
 
 def add_workout_log(user_id: int, date: str, time: str, status: str, note: str = "",
-                    duration_min: int | None = None, description: str = "") -> None:
+                    duration_min: int | None = None, description: str = "",
+                    kcal_burned: int | None = None, kcal_source: str = "") -> None:
     with _conn() as c:
         c.execute(
             "INSERT INTO workout_log(user_id, date, time, status, note, duration_min, "
-            "description) VALUES(?,?,?,?,?,?,?)",
-            (user_id, date, time, status, note, duration_min, (description or "").strip()[:500]),
+            "description, kcal_burned, kcal_source) VALUES(?,?,?,?,?,?,?,?,?)",
+            (user_id, date, time, status, note, duration_min,
+             (description or "").strip()[:500], kcal_burned, kcal_source),
         )
 
 
@@ -834,7 +928,8 @@ def workouts_detailed(user_id: int, dates: list[str], limit: int = 200) -> list[
     marks = ",".join("?" for _ in dates)
     with _conn() as c:
         rows = c.execute(
-            f"SELECT date, time, status, duration_min, description FROM workout_log "
+            f"SELECT date, time, status, duration_min, description, kcal_burned, kcal_source "
+        f"FROM workout_log "
             f"WHERE user_id = ? AND date IN ({marks}) "
             f"ORDER BY date DESC, id DESC LIMIT ?",
             (user_id, *dates, limit),

@@ -234,6 +234,10 @@ WATER_KB = ikb([
 ])
 WORKOUT_KB = ikb([[("✅ Сделал", "workout:done"), ("⏭ Не тренировался", "workout:skip")]])
 WORKOUT_NUDGE_KB = ikb([[("🏋️ Записать тренировку", "workout:log")]])
+# Кольцо уже записало тренировку — предлагаем готовые цифры.
+OURA_TRAIN_KB = ikb([[("✅ Записать её", "workout:auto")],
+                     [("✍️ Ввести вручную", "workout:manual"),
+                      ("⏭ Не тренировался", "workout:skip")]])
 WI_KB = ikb([[("🧘 Working In сделал", "habit:wi")]])
 
 
@@ -1007,11 +1011,40 @@ def _parse_duration(text: str | None) -> int | None:
     return total if 1 <= total <= 600 else None
 
 
+def _oura_candidate(uid: int, date: str) -> dict | None:
+    """Тренировка кольца за сегодня, которую ещё не записали в дневник."""
+    if not db.oura_connected(uid) or db.workout_for_date(uid, date):
+        return None
+    for w in db.oura_workouts_for_date(uid, date):
+        minutes = oura_mod.workout_duration_min(w)
+        hhmm = oura_mod.workout_time(w)
+        if minutes and hhmm:
+            return {"time": hhmm, "minutes": minutes,
+                    "calories": w.get("calories"), "activity": w.get("activity")}
+    return None
+
+
 @router.message(Command("train"))
 async def cmd_train(message: Message, state: FSMContext) -> None:
     """Тренировку не придумываем, а фиксируем: её задаёт тренер, не бот."""
+    uid = message.from_user.id
+    date, _ = now_date_time()
     _ensure(message)
     await state.clear()
+
+    cand = _oura_candidate(uid, date)
+    if cand:
+        await state.set_data({"date": date, "time": cand["time"],
+                              "duration": cand["minutes"],
+                              "kcal": cand["calories"], "kcal_source": "oura"})
+        bits = [f"в {cand['time']}", f"{cand['minutes']} мин"]
+        if cand["calories"]:
+            bits.append(f"{cand['calories']} ккал")
+        await message.answer(
+            "💍 Кольцо записало тренировку: " + ", ".join(bits) + ".\nЗаписать её?",
+            reply_markup=OURA_TRAIN_KB,
+        )
+        return
     await message.answer(TRAIN_ASK, reply_markup=WORKOUT_KB)
 
 
@@ -1035,6 +1068,23 @@ async def cb_workout(cb: CallbackQuery, state: FSMContext) -> None:
         db.add_workout_log(uid, date, time_, "skipped", note="train")
         await cb.answer("Записал")
         await cb.message.answer("⏭ Отметил: сегодня не тренировался 🙂")
+        return
+
+    if action == "auto":                   # берём готовые цифры с кольца
+        data = await state.get_data()
+        if not data.get("time"):
+            await cb.answer("Данные потерялись — начни заново: /train", show_alert=True)
+            return
+        await cb.answer()
+        await state.set_state(LogWorkout.description)
+        await cb.message.answer("✍️ Опиши тренировку: что делал, подходы, ощущения.\n"
+                                "Поставь «-», если без описания.")
+        return
+
+    if action == "manual":                 # цифры кольца не подошли — вводим руками
+        await cb.answer()
+        await state.clear()
+        await cb.message.answer(TRAIN_ASK, reply_markup=WORKOUT_KB)
         return
 
     await cb.answer()
@@ -1065,6 +1115,24 @@ async def lw_when(message: Message, state: FSMContext) -> None:
     await message.answer("⏱ Сколько длилась? Например <code>40</code>, «40 мин» или «1 час».")
 
 
+async def _workout_kcal(uid: int, date: str, hhmm: str, minutes: int) -> tuple[int, str]:
+    """Расход за тренировку: число из кольца, если тренировка в нём есть, иначе оценка."""
+    if db.oura_connected(uid):
+        stored = oura_mod.match_workout(db.oura_workouts_for_date(uid, date), hhmm, minutes)
+        if stored and stored.get("calories"):
+            return int(round(float(stored["calories"]))), "oura"
+        if config.OURA_ENABLED:
+            try:
+                hit = oura_mod.match_workout(
+                    await oura_mod.fetch_workouts(uid, date), hhmm, minutes)
+                if hit and hit.get("calories"):
+                    return int(round(float(hit["calories"]))), "oura"
+            except Exception:  # noqa: BLE001
+                log.warning("Oura: тренировки за день не получены", exc_info=True)
+    user = db.get_user(uid) or {}
+    return nutrition.workout_kcal_estimate(user.get("weight_kg"), minutes), "estimate"
+
+
 @router.message(LogWorkout.duration)
 async def lw_duration(message: Message, state: FSMContext) -> None:
     minutes = _parse_duration(message.text)
@@ -1072,7 +1140,9 @@ async def lw_duration(message: Message, state: FSMContext) -> None:
         await message.answer("Не разобрал длительность 🤔 Напиши минуты числом "
                              "(<code>40</code>) или «1 час 20 мин».")
         return
-    await state.update_data(duration=minutes)
+    data = await state.get_data()
+    kcal, source = await _workout_kcal(message.from_user.id, data["date"], data["time"], minutes)
+    await state.update_data(duration=minutes, kcal=kcal, kcal_source=source)
     await state.set_state(LogWorkout.description)
     await message.answer("✍️ Опиши тренировку: что делал, подходы, ощущения.\n"
                          "Поставь «-», если без описания.")
@@ -1084,11 +1154,18 @@ async def lw_description(message: Message, state: FSMContext) -> None:
     desc = "" if raw in ("-", "—", "нет") else raw[:500]
     data = await state.get_data()
     await state.clear()
+    kcal, source = data.get("kcal"), data.get("kcal_source", "")
     db.add_workout_log(message.from_user.id, data["date"], data["time"], "done",
-                       note="train", duration_min=data["duration"], description=desc)
-    tail = f": {html.escape(desc)}" if desc else ""
+                       note="train", duration_min=data["duration"], description=desc,
+                       kcal_burned=kcal, kcal_source=source)
+    # «≈» и «(оценка)» — только для прикидки: из кольца число точное.
+    burn = ""
+    if kcal:
+        burn = (f" — ≈ {kcal} ккал (оценка)" if source == "estimate"
+                else f" — {kcal} ккал (Oura)")
+    tail = f". {html.escape(desc)}" if desc else ""
     await message.answer(
-        f"🏋️ Записал тренировку в {data['time']}, {data['duration']} мин{tail}"
+        f"🏋️ Записал тренировку в {data['time']}, {data['duration']} мин{burn}{tail}"
     )
 
 

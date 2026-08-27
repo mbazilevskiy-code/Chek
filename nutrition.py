@@ -47,6 +47,18 @@ def day_totals(meals: list[dict]) -> dict:
     }
 
 
+# Расход на тренировке. MET ~6 — турник/брусья в умеренно-интенсивном режиме.
+# Это оценка «на глаз»: точное число даёт кольцо, если тренировка в нём есть.
+WORKOUT_MET = 6.0
+DEFAULT_WEIGHT_KG = 75.0
+
+
+def workout_kcal_estimate(weight_kg: float | None, minutes: int) -> int:
+    """Оценка расхода за тренировку: MET × вес × часы."""
+    weight = float(weight_kg or DEFAULT_WEIGHT_KG)
+    return int(round(WORKOUT_MET * weight * max(0, int(minutes)) / 60))
+
+
 def water_target_ml(weight_kg: float | None) -> int:
     """Норма воды по Чеку: ~0,033 л на кг веса (округление до 50 мл)."""
     if not weight_kg:

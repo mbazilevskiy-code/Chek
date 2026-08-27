@@ -258,8 +258,12 @@ def _bucket_weekly(series: list[dict], keys) -> list[dict]:
 
 
 _SERIES_KEYS = ("kcal", "protein", "fat", "carbs", "chek", "meals", "water")
+# Числовые метрики кольца: по ним считаем средние и схлопываем ряды.
 _OURA_KEYS = ("readiness", "sleep_score", "sleep_h", "hrv", "resting_hr",
-              "temp_dev", "activity_score", "steps")
+              "temp_dev", "activity_score", "steps",
+              "sleep_efficiency", "breath_avg", "deep_h", "rem_h", "light_h",
+              "spo2_avg", "active_kcal", "total_kcal", "distance_m", "active_min",
+              "stress_high_min", "cardio_age", "vo2_max")
 
 
 def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict:
@@ -357,6 +361,7 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
                 "series": [{"date": d, **(od.get(d) or {})} for d in reversed(dates)],
                 "latest": od.get(max(od)),
                 "avg": {k: _avg([v.get(k) for v in od.values()]) for k in _OURA_KEYS},
+                "workouts": db.oura_workouts_range(uid, dates),
                 "connected": True,
             }
 
@@ -407,10 +412,14 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
         workouts = {
             "list": [{"date": w["date"], "time": w["time"], "status": w["status"],
                       "duration_min": w["duration_min"],
-                      "description": w["description"] or ""} for w in wlog],
+                      "description": w["description"] or "",
+                      "kcal_burned": w["kcal_burned"],
+                      "kcal_source": w["kcal_source"] or ""} for w in wlog],
             "done": sum(1 for w in wlog if w["status"] == "done"),
             "skipped": sum(1 for w in wlog if w["status"] != "done"),
             "minutes": sum(w["duration_min"] or 0 for w in wlog if w["status"] == "done"),
+            # расход держим отдельно от съеденного: смешивать intake и burn нельзя
+            "kcal_burned": sum(w["kcal_burned"] or 0 for w in wlog if w["status"] == "done"),
         }
 
     # Последняя запись — по дневному ряду, до схлопывания в недели.
@@ -473,6 +482,9 @@ def week_data_text(uid: int) -> str:
             extra = []
             if w and w["duration_min"]:
                 extra.append(f"{w['duration_min']} мин")
+            if w and w["kcal_burned"]:
+                src = "оценка" if w["kcal_source"] == "estimate" else "Oura"
+                extra.append(f"расход ~{w['kcal_burned']} ккал ({src})")
             if w and w["description"]:
                 extra.append(w["description"][:120])
             parts.append("тренировка ✓" + (f" ({', '.join(extra)})" if extra else ""))
