@@ -16,7 +16,9 @@ import db
 AUTHORIZE_URL = "https://cloud.ouraring.com/oauth/authorize"
 TOKEN_URL = "https://api.ouraring.com/oauth/token"
 API = "https://api.ouraring.com/v2/usercollection"
-SCOPES = "email personal daily heartrate"
+# workout/session/tag/spo2Daily нужны для тренировок и части метрик; старые
+# токены их не содержат — такие источники просто пропускаются при заборе.
+SCOPES = "email personal daily heartrate workout session tag spo2Daily"
 
 
 class OuraError(Exception):
@@ -153,12 +155,21 @@ def match_workout(workouts: list[dict], hhmm: str, duration_min: int) -> dict | 
     return best
 
 
-async def _safe(session, token: str, path: str, params: dict) -> list[dict]:
-    """Часть эндпоинтов доступна не во всех тарифах — их просто пропускаем."""
+async def _safe(session, token: str, path: str, params: dict,
+                required: bool = False) -> list[dict]:
+    """Читает эндпоинт, не роняя весь забор из-за одного источника.
+
+    Часть метрик недоступна по тарифу или не покрыта scope выданного токена —
+    Oura отвечает на них 401/403. Для необязательных источников это норма:
+    пропускаем и идём дальше. Для базовых (сон, готовность, активность) 401
+    означает реальную проблему с токеном — его пробрасываем.
+    """
     try:
         return await _get(session, token, path, params)
     except OuraError:
-        raise
+        if required:
+            raise
+        return []
     except Exception:  # noqa: BLE001
         return []
 
@@ -183,15 +194,15 @@ async def fetch_and_store(uid: int, days: int = 14) -> int:
         return by_date.setdefault(day, {})
 
     async with aiohttp.ClientSession() as s:
-        for rec in await _safe(s, token, "daily_readiness", params):
+        for rec in await _safe(s, token, "daily_readiness", params, required=True):
             if rec.get("day"):
                 slot(rec["day"])["readiness"] = rec.get("score")
 
-        for rec in await _safe(s, token, "daily_sleep", params):
+        for rec in await _safe(s, token, "daily_sleep", params, required=True):
             if rec.get("day"):
                 slot(rec["day"])["sleep_score"] = rec.get("score")
 
-        for rec in await _safe(s, token, "daily_activity", params):
+        for rec in await _safe(s, token, "daily_activity", params, required=True):
             d = rec.get("day")
             if not d:
                 continue
@@ -203,13 +214,20 @@ async def fetch_and_store(uid: int, days: int = 14) -> int:
                                ("distance_m", "equivalent_walking_distance")):
                 if rec.get(field) is not None:
                     it[key] = rec[field]
+            # В ответе API минуты активности приходят как *_activity_time в секундах;
+            # вариант *_activity_minutes оставляем на случай другого формата.
             mins = sum(rec.get(k) or 0 for k in ("high_activity_minutes",
                                                  "medium_activity_minutes",
                                                  "low_activity_minutes"))
+            if not mins:
+                secs = sum(rec.get(k) or 0 for k in ("high_activity_time",
+                                                     "medium_activity_time",
+                                                     "low_activity_time"))
+                mins = int(secs // 60)
             if mins:
                 it["active_min"] = mins
 
-        for rec in await _safe(s, token, "sleep", params):
+        for rec in await _safe(s, token, "sleep", params, required=True):
             d = rec.get("day")
             if not d:
                 continue
