@@ -1015,6 +1015,184 @@ def test_labs_window():
        "старые анализы не выпадают из текста для AI-брифа")
 
 
+# ------------- тон общения с клиентом: бот собирает данные, советует тренер
+
+LABS_UID = 7007
+FAKE_COACH_BOT = 999001
+
+
+class _FakeNote:
+    def __init__(self):
+        self.text = None
+
+    async def edit_text(self, text, **kw):
+        self.text = text
+
+
+class _FakeMessage:
+    """Ровно столько от Message, сколько нужно обработчику. Без сети."""
+
+    def __init__(self, uid, bot_id):
+        self.from_user = type("U", (), {"id": uid, "first_name": "Тест"})()
+        self.bot = type("B", (), {"id": bot_id})()
+        self.note = _FakeNote()
+        self.sent = []
+
+    async def answer(self, text, **kw):
+        self.sent.append(text)
+        return self.note
+
+
+def _fake_coach_bot(botmod):
+    """Регистрируем бота тренера, чтобы is_client_bot() включил клиентский режим."""
+    botmod.COACH_BY_BOT[FAKE_COACH_BOT] = {
+        "id": 1, "name": "Николай", "brand": "Челлендж",
+        "coach_user_id": 555000, "cabinet_token": "cab-x", "bot_username": "coach_bot",
+    }
+
+
+def test_client_meal_reply():
+    import bot as botmod
+
+    data = {
+        "dish": "Круассан с начинкой", "confidence": "высокая",
+        "total_grams": 120, "total_kcal": 420, "total_protein_g": 9,
+        "total_fat_g": 24, "total_carbs_g": 42, "chek_score": 3,
+        "chek_verdict": "сильно обработанная выпечка из белой муки",
+        "chek_tip": "Замени на цельнозерновой вариант с яйцом",
+        "items": [],
+    }
+    reply = botmod.fmt_meal_reply(data, [], None)
+    ok("Круассан с начинкой" in reply, "название блюда в ответе клиенту")
+    ok("420" in reply, "калории в ответе клиенту")
+    ok("Б 9" in reply and "Ж 24" in reply and "У 42" in reply, "БЖУ в ответе клиенту")
+    ok("По Чеку: 3/10" in reply, "балл Чека показан числом")
+    ok("Замени на цельнозерновой" not in reply, "совета ИИ клиенту нет")
+    ok("обработанная выпечка" not in reply, "вердикта ИИ клиенту нет")
+    ok("💡" not in reply, "строки с советом нет")
+
+    # Вердикт и совет всё так же запрашиваются у ИИ — они нужны тренеру в кабинете
+    ok("chek_verdict" in analyzer.MEAL_SCHEMA["required"],
+       "вердикт по-прежнему запрашивается у модели — он уходит тренеру")
+    ok("chek_tip" in analyzer.MEAL_SCHEMA["properties"],
+       "совет по-прежнему в схеме — он уходит тренеру")
+
+
+def test_client_day_overview():
+    import bot as botmod
+    txt = botmod.build_day_overview(CLIENT_UID, TODAY)
+    ok("Еда по Чеку" in txt, "в сводке дня есть балл Чека")
+    ok("Вода" in txt, "в сводке дня есть вода")
+    for phrase in ("Пол бы", "так держать", "образцовый", "Завтра — цельная еда"):
+        ok(phrase not in txt, f"в сводке дня нет оценочной фразы «{phrase}»")
+
+
+async def _labs_confirm(bot_id):
+    import bot as botmod
+
+    parsed = {
+        "is_lab": True, "panel": "Биохимия", "date": TODAY,
+        "markers": [
+            {"name": "Ферритин", "value": 15.0, "value_text": None, "unit": "нг/мл",
+             "ref_low": 30, "ref_high": 400, "flag": "низко"},
+            {"name": "B12", "value": 500.0, "value_text": None, "unit": "пг/мл",
+             "ref_low": 200, "ref_high": 900, "flag": "норма"},
+        ],
+    }
+
+    async def fake_parse(data, media_type):
+        return parsed
+
+    saved = botmod.analyzer.parse_labs
+    botmod.analyzer.parse_labs = fake_parse
+    try:
+        m = _FakeMessage(LABS_UID, bot_id)
+        await botmod._process_labs(m, b"fake-pdf", "application/pdf", None)
+        return m.note.text
+    finally:
+        botmod.analyzer.parse_labs = saved
+
+
+def test_client_labs_confirmation():
+    import bot as botmod
+    _fake_coach_bot(botmod)
+    db.ensure_user(LABS_UID, "Клиент анализов")
+
+    txt = asyncio.run(_labs_confirm(FAKE_COACH_BOT))
+    ok("Разобрал бланк" in txt, "подтверждение загрузки нейтральное")
+    ok("2 показателей" in txt, "сказано, сколько показателей разобрано")
+    ok("1 вне нормы" in txt, "сказано, сколько вне нормы")
+    ok("Передал тренеру" in txt, "сказано, что данные ушли тренеру")
+    ok("Диагнозы не ставлю" in txt, "медицинская граница проговорена")
+    ok("/labreport" not in txt, "нет отсылки к разбору с рекомендациями")
+    ok("рекоменд" not in txt.lower(), "в подтверждении нет рекомендаций")
+
+    # В личном боте владельца формулировка своя — тренера там нет
+    own = asyncio.run(_labs_confirm(123456))
+    ok("Записал в дневник" in own, "в личном боте про тренера не пишем")
+    ok("Передал тренеру" not in own, "в личном боте нет упоминания тренера")
+
+    overview = botmod.labs_overview_text(LABS_UID)
+    ok("/labupload" in overview, "в /labs осталась загрузка нового бланка")
+    ok("/labreport" not in overview, "из /labs убран разбор с рекомендациями")
+    ok("Ферритин" in overview, "фактические показатели вне нормы клиенту показываем")
+
+
+def test_onboarding_lists_features():
+    import bot as botmod
+
+    greeting = botmod.coach_greeting({"name": "Николай", "brand": "Челлендж"}, "Михаил")
+    for kw in ("Еда", "Вода", "Тренировк", "БАД", "Самочувствие", "Анализ", "Oura", "/help"):
+        ok(kw in greeting, f"в приветствии клиента есть: {kw}")
+    ok("Михаил" in greeting, "клиента зовут по имени")
+    ok("Николай" in greeting, "тренер назван по имени")
+    ok("разбор и советы даёт" in greeting, "ожидание задано: разбор у тренера")
+
+    help_low = botmod.HELP_TEXT.lower()
+    for kw in ("вода", "тренировк", "бад", "самочувств", "анализ", "oura",
+               "/help", "/feel", "/oura", "/bad", "/train", "/water"):
+        ok(kw in help_low, f"в /help есть: {kw}")
+    ok("Я собираю твои данные для тренера" in botmod.CLIENT_NOTE,
+       "приписка про роль бота готова для клиента")
+
+    # Согласие по-прежнему не сломано: обработчики на месте
+    names = [h.callback.__name__ for h in botmod.router.callback_query.handlers]
+    ok("cb_consent_yes" in names, "обработчик согласия на месте")
+    ok("cb_consent_no" in names, "обработчик отказа на месте")
+
+
+def test_coach_still_gets_advice():
+    ok("ЧЕРНОВИК СООБЩЕНИЯ КЛИЕНТУ" in analyzer.BRIEF_SYSTEM,
+       "в брифе тренеру остался черновик сообщения клиенту")
+    ok("НА ЧТО ОБРАТИТЬ ВНИМАНИЕ" in analyzer.BRIEF_SYSTEM,
+       "в брифе тренеру остались пункты внимания")
+    ok("Не давай советов" in analyzer.WORKOUT_SYSTEM,
+       "из тренировки клиенту убраны советы по технике и восстановлению")
+    ok("совет по технике" not in analyzer.WORKOUT_SYSTEM,
+       "пункт с советом из плана тренировки убран")
+
+    captured = {}
+
+    async def fake_text(system, user):
+        captured["system"] = system
+        captured["user"] = user
+        return "📊 ЧТО ПРОИСХОДИТ\nвсё ок\n💬 ЧЕРНОВИК СООБЩЕНИЯ КЛИЕНТУ\nмолодец"
+
+    async def run():
+        saved = analyzer.generate_text
+        analyzer.generate_text = fake_text
+        try:
+            return await analyzer.generate_brief("Даша", "данные недели", {"name": "Николай"})
+        finally:
+            analyzer.generate_text = saved
+
+    out = asyncio.run(run())
+    eq(captured["system"], analyzer.BRIEF_SYSTEM, "бриф собирается по системному промпту тренера")
+    ok("Николай" in captured["user"], "имя тренера уходит в бриф")
+    ok("данные недели" in captured["user"], "данные клиента уходят в бриф")
+    ok("ЧЕРНОВИК" in out, "бриф возвращается тренеру целиком")
+
+
 # ------------------------------------------------- маршрутизация команд в диалогах
 
 
@@ -1154,6 +1332,16 @@ def main() -> int:
     test_normalize()
     print("- analyzer: разбор еды (моки)")
     test_analyzer_meals()
+    print("- клиент: ответ по еде без советов")
+    test_client_meal_reply()
+    print("- клиент: сводка дня без оценок")
+    test_client_day_overview()
+    print("- клиент: подтверждение анализов нейтральное")
+    test_client_labs_confirmation()
+    print("- онбординг: приветствие и /help со всеми функциями")
+    test_onboarding_lists_features()
+    print("- тренер: бриф по-прежнему советует")
+    test_coach_still_gets_advice()
     print("- bot: /cancel и команды внутри диалогов")
     test_routing()
 

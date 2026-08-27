@@ -69,6 +69,12 @@ def is_coach_himself(uid: int, coach: dict | None) -> bool:
     return bool(coach and coach.get("coach_user_id") == uid)
 
 
+def is_client_bot(message_bot_id: int) -> bool:
+    """Бот тренера. Здесь бот только собирает данные: советы, оценки и разборы
+    получает тренер (бриф и кабинет). В личном боте владельца ограничения нет."""
+    return coach_of(message_bot_id) is not None
+
+
 def _ensure(message: Message) -> None:
     """Создаёт пользователя; клиентов привязывает к тренеру."""
     coach = coach_of(message.bot.id)
@@ -295,8 +301,7 @@ def build_day_overview(uid: int, date: str) -> str:
                      else f"\n   Перебор: {_i(-rest)} ккал 😬")
         lines.append(food)
         if t["chek"]:
-            lines.append(f"{chek_emoji(t['chek'])} Еда по Чеку: {t['chek']:.1f}/10 — "
-                         f"{nutrition.chek_day_verdict(t['chek'])}")
+            lines.append(f"{chek_emoji(t['chek'])} Еда по Чеку: {t['chek']:.1f}/10")
     else:
         lines.append("🍽 Еда: записей нет")
     lines.extend(day_extras_lines(uid, date, user))
@@ -345,11 +350,10 @@ def fmt_meal_reply(data: dict, meals: list[dict], user: dict | None) -> str:
     if data.get("assumptions"):
         lines.append(f"<i>💭 {html.escape(str(data['assumptions']))}</i>")
 
+    # Клиенту — только число. Вердикт и совет ИИ уходят тренеру: они лежат в
+    # raw_json и видны в кабинете и недельном брифе.
     lines.append("")
-    verdict = html.escape(str(data.get("chek_verdict") or ""))
-    lines.append(f"{chek_emoji(score)} <b>По Чеку: {score}/10</b> — {verdict}")
-    if data.get("chek_tip"):
-        lines.append(f"💡 {html.escape(str(data['chek_tip']))}")
+    lines.append(f"{chek_emoji(score)} <b>По Чеку: {score}/10</b>")
 
     totals = nutrition.day_totals(meals)
     lines.append("")
@@ -459,26 +463,28 @@ async def analyze_and_reply(
 # ---------------------------------------------------------------- команды
 
 HELP_TEXT = (
-    "📸 Пришли <b>фото еды</b> — посчитаю калории и БЖУ, оценю блюдо по принципам "
-    "Пола Чека и запишу в дневник.\n"
-    "✍️ Подпись к фото уточняет расчёт: «борщ со сметаной, 400 г».\n"
-    "💬 Можно и просто текстом: «2 яйца, тост с маслом, кофе с молоком».\n\n"
-    "🏋️ <b>Тренировки (турник и брусья):</b>\n"
-    "/train — программа на сегодня по Чеку\n"
-    "/plan — расписание, напр.: <code>/plan пн,ср,пт 18:00</code>\n\n"
-    "💧 <b>Вода:</b> напиши «вода 300» или открой /water\n"
-    "🧘 <b>Working In:</b> отметить — /habits\n\n"
-    "💊 /supplements — БАДы: список, отметки, проверка совместимости\n"
-    "🙂 /feel — отметить самочувствие (энергия, стресс, настроение)\n"
-    "🧪 /labs — анализы: пришли PDF/фото бланка, покажу динамику и что вне нормы\n"
-    "💍 /oura — подключить кольцо Oura (сон, готовность, HRV)\n\n"
+    "Вот всё, что я умею:\n\n"
+    "🍽 <b>Еда</b> — пришли фото или напиши текстом («2 яйца, тост с маслом, кофе»): "
+    "посчитаю КБЖУ и запишу в дневник. Подпись к фото уточняет расчёт.\n"
+    "💧 <b>Вода</b> — напиши «вода 300» или открой /water\n"
+    "🏋️ <b>Тренировки</b> — /train программа на сегодня, /plan расписание "
+    "(<code>/plan пн,ср,пт 18:00</code>), отметки о выполнении\n"
+    "💊 <b>БАДы</b> — /bad: что принимаешь, план приёма и отметки\n"
+    "😌 <b>Самочувствие</b> — /feel: энергия, стресс, настроение\n"
+    "🩸 <b>Анализы</b> — пришли фото или PDF бланка, /labs покажет показатели и динамику\n"
+    "💍 <b>Кольцо Oura</b> — /oura: подтянуть сон, готовность и HRV\n"
+    "🧘 <b>Working In</b> — отметить: /habits\n\n"
     "📊 /today — весь день · /week — неделя\n"
     "🎯 /profile — норма КБЖУ и воды · /targets — поправить вручную\n"
     "⏰ /reminders — напоминания и вечерняя сводка\n"
-    "🗑 /undo — удалить последнюю запись еды\n\n"
-    "<i>Оценка еды по фото — приблизительная (±20–30%). Чем точнее подпись, "
+    "🗑 /undo — удалить последнюю запись еды\n"
+    "❓ /help — это меню\n\n"
+    "<i>Расчёт еды по фото приблизительный (±20–30%). Чем точнее подпись, "
     "тем точнее расчёт.</i>"
 )
+
+# Клиенту тренера сразу проговариваем роль бота, чтобы он не ждал от него разборов.
+CLIENT_NOTE = "\n\n<i>Я собираю твои данные для тренера — разбор и советы даёт он.</i>"
 
 
 def coach_greeting(coach: dict, user_name: str) -> str:
@@ -487,8 +493,16 @@ def coach_greeting(coach: dict, user_name: str) -> str:
     return (
         f"Привет, {html.escape(user_name)}! 👋\n"
         f"Я — <b>{brand}</b>, ассистент тренера <b>{cname}</b>.\n\n"
-        f"Помогаю вести дневник между вашими встречами: присылай фото еды, отмечай воду "
-        f"и самочувствие — а {cname} будет видеть твой прогресс и вести тебя точнее.\n"
+        "Помогаю вести дневник между вашими встречами. Вот что я умею:\n\n"
+        "🍽 <b>Еда</b> — фото или текстом, посчитаю КБЖУ\n"
+        "💧 <b>Вода</b> — напиши сколько, или /water\n"
+        "🏋️ <b>Тренировки</b> — /train, /plan, отметки о выполнении\n"
+        "💊 <b>БАДы</b> — /bad: что принимаешь и отметки приёма\n"
+        "😌 <b>Самочувствие</b> — /feel: энергия, сон, стресс, настроение\n"
+        "🩸 <b>Анализы</b> — пришли фото или PDF бланка (/labs)\n"
+        "💍 <b>Кольцо Oura</b> — /oura, подтянуть сон и готовность\n"
+        "❓ /help — всегда покажет это меню\n\n"
+        f"Я собираю твои данные для тренера — разбор и советы даёт {cname} 🙌\n"
     )
 
 
@@ -562,7 +576,11 @@ async def cb_consent_yes(cb: CallbackQuery) -> None:
     await cb.message.answer(
         "Отлично, поехали! 🚀\n\n"
         "Для начала рассчитаем твою норму калорий и воды — жми /profile "
-        "(6 коротких вопросов).\n\nА потом просто присылай фото еды 📸"
+        "(6 коротких вопросов).\n\n"
+        "А дальше веди всё, что важно: 🍽 еда фото или текстом · 💧 вода · "
+        "🏋️ тренировки /train · 💊 БАДы /bad · 😌 самочувствие /feel · "
+        "🩸 анализы /labs · 💍 кольцо /oura\n"
+        "❓ /help — полное меню." + CLIENT_NOTE
     )
 
 
@@ -581,7 +599,8 @@ async def cb_consent_no(cb: CallbackQuery) -> None:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT)
+    note = CLIENT_NOTE if is_client_bot(message.bot.id) else ""
+    await message.answer(HELP_TEXT + note)
 
 
 @router.message(Command("clients"))
@@ -911,11 +930,11 @@ async def cb_workout(cb: CallbackQuery) -> None:
         await cb.message.edit_reply_markup(reply_markup=None)
     except TelegramBadRequest:
         pass
+    # Подтверждение факта, без наставлений: их даёт тренер.
     if status == "done":
-        await cb.message.answer("🏋️ Тренировка записана — ✅. Не забудь Working In-заминку 🧘")
+        await cb.message.answer("🏋️ Тренировка записана — ✅")
     else:
-        await cb.message.answer("⏭ Отметил пропуск. По Чеку отдых — тоже тренировка, "
-                                "если он осознанный 🙂")
+        await cb.message.answer("⏭ Отметил пропуск 🙂")
 
 
 def _parse_plan_args(args: str) -> list[tuple[int, str]] | None:
@@ -1103,7 +1122,7 @@ class AddSuppl(StatesGroup):
     plan = State()
 
 
-def suppl_kb(uid: int, date: str) -> InlineKeyboardMarkup:
+def suppl_kb(uid: int, date: str, client: bool = False) -> InlineKeyboardMarkup:
     supps = db.list_supplements(uid)
     taken = db.taken_supplements(uid, date)
     rows = []
@@ -1111,27 +1130,31 @@ def suppl_kb(uid: int, date: str) -> InlineKeyboardMarkup:
         mark = "✅" if s["id"] in taken else "⬜"
         label = f"{mark} {s['name']}" + (f" · {s['timing']}" if s["timing"] else "")
         rows.append([InlineKeyboardButton(text=label[:60], callback_data=f"sup:take:{s['id']}")])
-    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="sup:add"),
-                 InlineKeyboardButton(text="🔍 Совместимость", callback_data="sup:check")])
+    # «Совместимость» — это ИИ-совет, клиенту тренера его не показываем.
+    bottom = [InlineKeyboardButton(text="➕ Добавить", callback_data="sup:add")]
+    if not client:
+        bottom.append(InlineKeyboardButton(text="🔍 Совместимость", callback_data="sup:check"))
+    rows.append(bottom)
     if supps:
         rows.append([InlineKeyboardButton(text="🗑 Убрать из списка", callback_data="sup:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def suppl_text(uid: int, date: str) -> str:
+def suppl_text(uid: int, date: str, client: bool = False) -> str:
     supps = db.list_supplements(uid)
     if not supps:
-        return ("💊 <b>БАДы и добавки</b>\n\nСписок пуст. Нажми «Добавить» — укажешь название "
-                "и когда принимаешь. Я проверю набор на совместимость.")
+        return ("💊 <b>БАДы и добавки</b>\n\nСписок пуст. Нажми «Добавить» — укажешь название, "
+                "когда принимаешь и как часто планируешь.")
     taken = db.taken_supplements(uid, date)
     lines = []
     for s in supps:
         plan = s["plan_days_per_week"] or 7
         parts = [p for p in (s["timing"], PLAN_LABELS.get(plan, f"{plan} раз в неделю")) if p]
         lines.append(f"• {html.escape(s['name'])} — {' · '.join(parts)}")
-    return (f"💊 <b>БАДы сегодня: {len(taken)}/{len(supps)}</b>\n"
-            + "\n".join(lines)
-            + "\n\nОтметь принятые кнопками. Проверить набор — «Совместимость».")
+    # «Совместимость» — ИИ-совет, клиенту тренера кнопку не показываем.
+    tail = ("\n\nОтметь принятые кнопками." if client
+            else "\n\nОтметь принятые кнопками. Проверить набор — «Совместимость».")
+    return f"💊 <b>БАДы сегодня: {len(taken)}/{len(supps)}</b>\n" + "\n".join(lines) + tail
 
 
 @router.message(Command("supplements", "bad", "supps"))
@@ -1139,7 +1162,8 @@ async def cmd_supplements(message: Message) -> None:
     uid = message.from_user.id
     date, _ = now_date_time()
     _ensure(message)
-    await message.answer(suppl_text(uid, date), reply_markup=suppl_kb(uid, date))
+    client = is_client_bot(message.bot.id)
+    await message.answer(suppl_text(uid, date, client), reply_markup=suppl_kb(uid, date, client))
 
 
 @router.callback_query(F.data.startswith("sup:"))
@@ -1148,12 +1172,13 @@ async def cb_suppl(cb: CallbackQuery, state: FSMContext) -> None:
     date, _ = now_date_time()
     parts = cb.data.split(":")
     action = parts[1]
+    client = is_client_bot(cb.message.bot.id)
 
     if action == "take":
         taken = db.toggle_supplement_taken(uid, date, int(parts[2]))
         await cb.answer("Принято ✅" if taken else "Снял отметку")
         try:
-            await cb.message.edit_text(suppl_text(uid, date), reply_markup=suppl_kb(uid, date))
+            await cb.message.edit_text(suppl_text(uid, date, client), reply_markup=suppl_kb(uid, date, client))
         except TelegramBadRequest:
             pass
     elif action == "add":
@@ -1161,6 +1186,9 @@ async def cb_suppl(cb: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(AddSuppl.name)
         await cb.message.answer("Название добавки? (например «Витамин D 2000 МЕ»)\n(отмена — /cancel)")
     elif action == "check":
+        if client:
+            await cb.answer("Совместимость смотрит тренер", show_alert=True)
+            return
         await cb.answer("Проверяю…")
         await _run_suppl_check(cb.message, uid)
     elif action == "manage":
@@ -1178,13 +1206,13 @@ async def cb_suppl(cb: CallbackQuery, state: FSMContext) -> None:
         db.deactivate_supplement(uid, int(parts[2]))
         await cb.answer("Убрал")
         try:
-            await cb.message.edit_text(suppl_text(uid, date), reply_markup=suppl_kb(uid, date))
+            await cb.message.edit_text(suppl_text(uid, date, client), reply_markup=suppl_kb(uid, date, client))
         except TelegramBadRequest:
             pass
     elif action == "back":
         await cb.answer()
         try:
-            await cb.message.edit_text(suppl_text(uid, date), reply_markup=suppl_kb(uid, date))
+            await cb.message.edit_text(suppl_text(uid, date, client), reply_markup=suppl_kb(uid, date, client))
         except TelegramBadRequest:
             pass
 
@@ -1242,7 +1270,9 @@ async def add_suppl_plan(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"✅ Добавил: <b>{html.escape(data['name'])}</b> — {PLAN_LABELS[plan]}",
         reply_markup=ReplyKeyboardRemove())
-    await _run_suppl_check(message, uid)
+    # Проверку совместимости (ИИ-совет) клиенту тренера не показываем.
+    if not is_client_bot(message.bot.id):
+        await _run_suppl_check(message, uid)
 
 
 # ---------------------------------------------------------------- самочувствие
@@ -1386,7 +1416,7 @@ def labs_overview_text(uid: int) -> str:
     else:
         lines.append("✅ Все показатели последнего бланка в пределах нормы.")
     lines.append("")
-    lines.append("Прислать новый бланк — /labupload · разбор с рекомендациями — /labreport")
+    lines.append("Прислать новый бланк — /labupload")
     return "\n".join(lines)
 
 
@@ -1434,18 +1464,15 @@ async def _process_labs(message: Message, data: bytes, media_type: str,
         date = now_date_time()[0]
     db.add_lab_result(uid, date, parsed["panel"], parsed["markers"])
 
+    # Подтверждение нейтральное: цифры — да, трактовка — нет. Разбор идёт тренеру.
     n = len(parsed["markers"])
     abn = [m for m in parsed["markers"] if m["flag"] in ("низко", "высоко")]
-    lines = [f"✅ Записал: <b>{html.escape(parsed['panel'])}</b> от {date} — {n} показателей."]
-    if abn:
-        lines.append(f"\n<b>Вне нормы ({len(abn)}):</b>")
-        for m in abn[:15]:
-            val = m["value_text"] or (f"{m['value']:g}" if m["value"] is not None else "?")
-            lines.append(f"{_flag_icon(m['flag'])} {html.escape(m['name'])}: {val} {html.escape(m['unit'])}")
-    else:
-        lines.append("\n✅ Все показатели в пределах нормы.")
-    lines.append("\n🔬 Разбор с рекомендациями — /labreport")
-    await note.edit_text("\n".join(lines))
+    tail = ("Передал тренеру." if is_client_bot(message.bot.id) else "Записал в дневник.")
+    await note.edit_text(
+        f"✅ Разобрал бланк: <b>{html.escape(parsed['panel'])}</b> от {date} — "
+        f"{n} показателей, {len(abn)} вне нормы. {tail} Диагнозы не ставлю.\n\n"
+        "Свои цифры и динамику смотри в /labs."
+    )
 
 
 @router.message(LabUpload.wait, F.photo)
@@ -1470,6 +1497,13 @@ async def lab_document(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("labreport"))
 async def cmd_labreport(message: Message) -> None:
+    if is_client_bot(message.bot.id):
+        # Разбор анализов — работа тренера; ИИ по-прежнему готовит его, но в бриф.
+        await message.answer(
+            "Разбор анализов делает твой тренер — я передал ему показатели и динамику.\n"
+            "Свои цифры смотри в /labs."
+        )
+        return
     uid = message.from_user.id
     dates = db.lab_dates(uid)
     if not dates:
@@ -1804,7 +1838,7 @@ CLIENT_COMMANDS = [
     BotCommand(command="water", description="Вода за сегодня"),
     BotCommand(command="supplements", description="БАДы и добавки"),
     BotCommand(command="feel", description="Отметить самочувствие"),
-    BotCommand(command="labs", description="Анализы: динамика и разбор"),
+    BotCommand(command="labs", description="Анализы: показатели и динамика"),
     BotCommand(command="oura", description="Кольцо Oura: сон и готовность"),
     BotCommand(command="habits", description="Привычки: Working In"),
     BotCommand(command="profile", description="Рассчитать нормы"),
