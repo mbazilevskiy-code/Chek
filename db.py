@@ -226,13 +226,22 @@ def set_setting(key: str, value: str) -> None:
 # ---------- пользователи ----------
 
 def ensure_user(user_id: int, name: str | None = None, coach_id: int | None = None) -> None:
-    """Создаёт пользователя. coach_id применяется ТОЛЬКО при создании записи:
-    существующий пользователь (в т.ч. личный) никогда не перепривязывается к тренеру."""
+    """Создаёт пользователя и привязывает к тренеру, если тренера у него ещё нет.
+
+    Человек мог завестись раньше в другом боте «Чека» — тогда строка уже есть,
+    и без этого он молча остаётся невидимым в кабинете тренера. Привязываем
+    только свободных: у кого coach_id уже стоит, к другому тренеру не уводим.
+    Согласие при этом сбрасываем — согласие одному тренеру не значит согласие
+    другому, бот переспросит.
+    """
     with _conn() as c:
         c.execute("INSERT OR IGNORE INTO users(user_id, name, coach_id) VALUES(?, ?, ?)",
                   (user_id, name, coach_id))
         if name:
             c.execute("UPDATE users SET name = ? WHERE user_id = ?", (name, user_id))
+        if coach_id is not None:
+            c.execute("UPDATE users SET coach_id = ?, consent = 0 "
+                      "WHERE user_id = ? AND coach_id IS NULL", (coach_id, user_id))
 
 
 def get_user(user_id: int) -> dict | None:

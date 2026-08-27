@@ -135,13 +135,16 @@ async def access_filter(message: Message) -> bool:
         return True
     if is_coach_himself(uid, coach):
         return True
+    # Сначала привязываем к тренеру (человек мог завестись раньше в другом боте),
+    # и только потом смотрим согласие: иначе старое согласие пропускало бы его
+    # дальше, а в кабинете тренера он так и не появлялся.
+    _ensure(message)
     # Клиент: без согласия — только /start (там покажем кнопки согласия).
     user = db.get_user(uid)
     if user and user.get("consent"):
         return True
     if (message.text or "").startswith("/start"):
         return True
-    _ensure(message)
     await message.answer(consent_text(coach), reply_markup=CONSENT_KB)
     return False
 

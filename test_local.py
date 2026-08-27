@@ -100,11 +100,11 @@ def test_users():
     eq(u["weight_kg"], 80, "вес сохранён")
     eq(u["kcal_target"], 2760, "цель по калориям сохранена")
 
-    # Повторный ensure_user обновляет имя, но НЕ перепривязывает к тренеру.
-    db.ensure_user(UID, "Владелец 2", coach_id=777)
+    # Повторный ensure_user обновляет имя; без coach_id привязка не трогается.
+    db.ensure_user(UID, "Владелец 2")
     u = db.get_user(UID)
     eq(u["name"], "Владелец 2", "имя обновляется")
-    eq(u["coach_id"], None, "существующий пользователь не перепривязывается к тренеру")
+    eq(u["coach_id"], None, "без coach_id пользователь остаётся без тренера")
 
     ok(UID in db.all_user_ids(), "пользователь в общем списке")
 
@@ -295,6 +295,41 @@ def test_coaches():
     eq(clients[0]["user_id"], CLIENT_UID, "тот самый клиент")
     eq(len(db.clients_of_coach(99999)), 0, "у чужого тренера клиентов нет")
     return cid
+
+
+def test_late_join_coach():
+    """Человек мог завестись раньше в другом боте «Чека» — он всё равно должен
+    попасть в кабинет тренера, а не остаться молча невидимым."""
+    late = 6006
+    db.ensure_user(late, "Михаил")            # завёлся в личном боте
+    db.update_user(late, consent=1)           # согласие, данное там же
+    eq(db.get_user(late)["coach_id"], None, "сначала тренера у него нет")
+
+    coach = db.add_coach("222333444:AA-late", "Николай", "Челлендж", "cab-late")
+    cid = coach["id"]
+    db.ensure_user(late, "Михаил", coach_id=cid)
+    u = db.get_user(late)
+    eq(u["coach_id"], cid, "существующий пользователь привязывается к тренеру")
+    eq(u["consent"], 0, "старое согласие сбрасывается — бот тренера переспросит")
+    eq(len(db.clients_of_coach(cid)), 0, "до нового согласия в кабинете не виден")
+
+    db.update_user(late, consent=1)
+    eq([x["user_id"] for x in db.clients_of_coach(cid)], [late],
+       "после согласия появляется в кабинете тренера")
+
+    # Уже занятого клиента другой тренер не забирает
+    other = db.add_coach("555666777:AA-other", "Другой", "Другой бренд", "cab-other")
+    db.ensure_user(late, "Михаил", coach_id=other["id"])
+    eq(db.get_user(late)["coach_id"], cid, "чужого клиента второй тренер не уводит")
+    eq(db.get_user(late)["consent"], 1, "и согласие у него не сбрасывается")
+    eq(len(db.clients_of_coach(other["id"])), 0, "у второго тренера клиентов не появилось")
+
+    # Новый пользователь сразу приходит к тренеру — но согласия ещё не давал
+    fresh = 6007
+    db.ensure_user(fresh, "Новичок", coach_id=cid)
+    f = db.get_user(fresh)
+    eq(f["coach_id"], cid, "новый пользователь привязан сразу")
+    eq(f["consent"], 0, "и согласия ещё не давал")
 
 
 # ---------------------------------------------------------------- db: Oura
@@ -1080,6 +1115,8 @@ def main() -> int:
     test_labs()
     print("- db: тренеры и клиенты")
     coach_id = test_coaches()
+    print("- db: поздняя привязка к тренеру")
+    test_late_join_coach()
     print("- db: Oura")
     test_oura_db()
     print("- nutrition: нормы КБЖУ и воды")
