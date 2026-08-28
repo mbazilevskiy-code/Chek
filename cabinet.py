@@ -35,22 +35,45 @@ def when_word(date_str: str) -> str:
     return d.strftime("%d.%m")
 
 
+def _latest_value(rows: dict, key: str):
+    """Последнее непустое значение метрики в окне.
+
+    Строка за сегодня часто заводится раньше, чем приходят данные, поэтому
+    брать просто максимальную дату нельзя — получим пустые метрики.
+    """
+    for day in sorted(rows, reverse=True):
+        value = (rows[day] or {}).get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _gadget_summary(rows: dict, connected: bool, ready_key: str) -> dict:
+    """Сводка гаджета для колец.
+
+    Вёрстка форматирует числа без проверки на null, поэтому «подключён»
+    выставляем только когда есть чем заполнить: готовность и сон.
+    """
+    if not connected:
+        return {"connected": False}
+    readiness = _latest_value(rows, ready_key)
+    sleep_h = _latest_value(rows, "sleep_h")
+    if readiness is None or sleep_h is None:
+        return {"connected": False}
+    return {"connected": True, "readiness": readiness, "sleep_h": sleep_h,
+            "hrv": _latest_value(rows, "hrv") or 0,
+            "rhr": _latest_value(rows, "resting_hr") or 0}
+
+
 def gadget_blocks(uid: int, dates: list[str]):
     """oura / whoop и главный гаджет: подключённый, а из двух — с более свежими данными."""
     oura_rows = db.oura_range(uid, dates)
     whoop_rows = db.whoop_range(uid, dates)
     oura_on, whoop_on = db.oura_connected(uid), db.whoop_connected(uid)
 
-    oura = {"connected": bool(oura_on)}
-    if oura_on and oura_rows:
-        last = oura_rows[max(oura_rows)]
-        oura.update(readiness=last.get("readiness"), sleep_h=last.get("sleep_h"),
-                    hrv=last.get("hrv"), rhr=last.get("resting_hr"))
-    whoop = {"connected": bool(whoop_on)}
-    if whoop_on and whoop_rows:
-        last = whoop_rows[max(whoop_rows)]
-        whoop.update(readiness=last.get("recovery"), sleep_h=last.get("sleep_h"),
-                     hrv=last.get("hrv"), rhr=last.get("resting_hr"))
+    oura = _gadget_summary(oura_rows, oura_on, "readiness")
+    whoop = _gadget_summary(whoop_rows, whoop_on, "recovery")
+    oura_on, whoop_on = oura["connected"], whoop["connected"]
 
     if oura_on and whoop_on:
         newest_o = max(oura_rows) if oura_rows else ""

@@ -2612,6 +2612,46 @@ def test_cabinet_contract():
     eq(p["weight"]["delta30"], -0.6, "изменение за месяц")
 
 
+def test_cabinet_gadget_never_null():
+    """Вёрстка форматирует числа гаджета без проверки на null.
+
+    Пустая строка за сегодня (её заводит забор до прихода данных) роняла
+    весь render(), и страница оставалась пустым каркасом.
+    """
+    import cabinet
+
+    uid = 7062
+    db.ensure_user(uid, "С кольцом")
+    db.save_oura_tokens(uid, "a", "r", 9_000_000_000.0)
+    db.upsert_oura_daily(uid, day(2), readiness=77, sleep_h=4.3, hrv=63, resting_hr=52)
+    db.upsert_oura_daily(uid, TODAY)          # строка есть, метрик ещё нет
+
+    g = cabinet.payload(uid, 30)["gadgets"]["oura"]
+    eq(g["connected"], True, "кольцо подключено")
+    for key in ("readiness", "sleep_h", "hrv", "rhr"):
+        ok(g[key] is not None, f"метрика «{key}» не пустая — иначе страница падает")
+    eq(g["readiness"], 77, "значение взято из последнего непустого дня")
+    eq(g["sleep_h"], 4.3, "сон тоже из непустого дня")
+
+    # Токен есть, но данных нет вовсе — тогда честнее показать «не подключён»,
+    # чем отдать null и уронить страницу.
+    bare = 7063
+    db.ensure_user(bare, "Только токен")
+    db.save_oura_tokens(bare, "a", "r", 9_000_000_000.0)
+    gb = cabinet.payload(bare, 30)["gadgets"]
+    eq(gb["oura"]["connected"], False, "без единой метрики гаджет не считается готовым")
+    eq(sorted(gb["oura"]), ["connected"], "и лишних пустых полей не отдаём")
+
+    # Инвариант для всех клиентов сразу
+    for probe in (CAB_UID, uid, bare):
+        for name in ("oura", "whoop"):
+            block = cabinet.payload(probe, 30)["gadgets"][name]
+            if block["connected"]:
+                ok(all(block.get(k) is not None
+                       for k in ("readiness", "sleep_h", "hrv", "rhr")),
+                   f"{name}: подключён — значит все числа на месте")
+
+
 def test_cabinet_empty_sections():
     uid = 7061
     db.ensure_user(uid, "Пустой")
@@ -3024,6 +3064,8 @@ def main() -> int:
     test_whoop_agent_and_cabinet()
     print("- кабинеты: контракт данных")
     test_cabinet_contract()
+    print("- кабинеты: метрики гаджета никогда не null")
+    test_cabinet_gadget_never_null()
     print("- кабинеты: пустые разделы")
     test_cabinet_empty_sections()
     print("- кабинеты: карточка у тренера")
