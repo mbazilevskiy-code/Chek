@@ -1735,6 +1735,10 @@ def test_announce_plan():
     ok(by_uid[CLIENT_UID]["via"].startswith("@"), "клиенту пишет бот его тренера")
     ok("Чек" not in by_uid[CLIENT_UID]["text"], "текст клиенту нейтральный")
 
+    named = announce.plan("привет от {тренер}")
+    for tgt in named:
+        ok("{тренер}" not in tgt["text"], "плейсхолдер имени подставлен, а не ушёл как есть")
+
     no_consent = 12121
     coach_id = db.list_coaches()[0]["id"]
     db.ensure_user(no_consent, "Без согласия", coach_id=coach_id)

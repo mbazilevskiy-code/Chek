@@ -53,11 +53,14 @@ def plan(text: str, owner_text: str | None = None) -> list[dict]:
                 continue
             if not user.get("consent"):
                 continue          # без согласия не пишем
-            targets.append({"uid": uid, "token": coach["bot_token"], "text": text,
+            # {тренер} подставляем по каждому боту: клиент видит имя своего.
+            body = text.replace("{тренер}", coach.get("name") or "тренеру")
+            targets.append({"uid": uid, "token": coach["bot_token"], "text": body,
                             "via": "@" + (coach.get("bot_username") or str(coach_id))})
         elif uid in owners and config.TELEGRAM_BOT_TOKEN:
+            body = (owner_text or text).replace("{тренер}", "тренеру")
             targets.append({"uid": uid, "token": config.TELEGRAM_BOT_TOKEN,
-                            "text": owner_text or text, "via": "личный бот"})
+                            "text": body, "via": "личный бот"})
     return targets
 
 
