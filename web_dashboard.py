@@ -704,9 +704,17 @@ async def _oura_callback(request: web.Request) -> web.Response:
 async def _whoop_callback(request: web.Request) -> web.Response:
     import whoop
 
+    import logging
+
+    log = logging.getLogger("whoop.callback")
     code = request.query.get("code")
     state = request.query.get("state") or ""
+    # Логируем сам факт возврата: без этого не отличить «не дошёл» от «упал у нас».
+    log.info("WHOOP callback: параметры=%s error=%s state_len=%s",
+             sorted(request.query), request.query.get("error"), len(state))
     if request.query.get("error"):
+        log.error("WHOOP отказал на своей стороне: %s / %s",
+                  request.query.get("error"), request.query.get("error_description"))
         return _oura_page("Подключение отменено",
                           "Доступ к браслету не выдан. Скажи ассистенту, если захочешь "
                           "попробовать снова.")
@@ -720,6 +728,7 @@ async def _whoop_callback(request: web.Request) -> web.Response:
         n = await whoop.fetch_and_store(uid)
     except Exception as e:  # noqa: BLE001
         import html as _html
+        log.exception("WHOOP: подключение не завершилось")
         return _oura_page("Не получилось",
                           "Ошибка при подключении WHOOP: " + _html.escape(str(e)[:160]))
     db.set_setting(f"whoopstate:{state}", "")

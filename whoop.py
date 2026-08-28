@@ -8,6 +8,7 @@ v1 закрыт, работаем только с v2. Токен живёт ок
 scope offline и обновление по refresh_token.
 """
 import json
+import logging
 import time
 from datetime import datetime, timedelta
 
@@ -23,6 +24,9 @@ SCOPES = ("offline read:recovery read:sleep read:cycles read:workout "
           "read:profile read:body_measurement")
 
 KJ_PER_KCAL = 4.184
+
+
+log = logging.getLogger(__name__)
 
 
 class WhoopError(Exception):
@@ -42,13 +46,24 @@ def authorize_url(state: str) -> str:
 
 
 async def _post_token(data: dict) -> dict:
+    """Обмен кода или refresh на токены. Ответ логируем — без секретов."""
+    grant = data.get("grant_type")
     data = dict(data, client_id=config.WHOOP_CLIENT_ID,
                 client_secret=config.WHOOP_CLIENT_SECRET)
     async with aiohttp.ClientSession() as s:
         async with s.post(TOKEN_URL, data=data) as r:
-            payload = await r.json()
+            body = await r.text()
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                payload = {}
             if r.status != 200 or "access_token" not in payload:
-                raise WhoopError(str(payload)[:300])
+                # invalid_client — не те ключи; invalid_grant — код просрочен,
+                # использован повторно или redirect_uri не совпал.
+                log.error("WHOOP token %s: HTTP %s %s", grant, r.status, body[:300])
+                raise WhoopError(body[:300])
+            log.info("WHOOP token %s: получен, expires_in=%s",
+                     grant, payload.get("expires_in"))
             return payload
 
 
