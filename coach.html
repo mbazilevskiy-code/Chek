@@ -2,676 +2,572 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Чек Про — кабинет тренера</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Кабинет тренера</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;800&display=swap">
 <style>
+/* ============ токены: те же, что в client.html ============ */
 :root{
-  color-scheme:light;
-  --page:#f4f6f3;--surface:#ffffff;--surface-2:#f8faf7;
-  --ink:#151a13;--ink-2:#535a4c;--muted:#8b917f;
-  --line:#e6e9e0;--grid:#e9ebe3;--baseline:#c9ccc0;
-  --brand:#2f7a3a;--brand-soft:#e4f0e2;
-  --s1:#2a78d6;--s3:#1baf7a;--s4:#7a5af5;
-  --ok:#0a8f2c;--ok-bg:#e2f2e2;--warn:#b57900;--warn-bg:#fbf0d6;--crit:#cf3b3b;--crit-bg:#fbe3e3;
-  --shadow:0 1px 2px rgba(20,26,19,.05),0 4px 16px rgba(20,26,19,.04);
-}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
   color-scheme:dark;
-  --page:#0e120d;--surface:#171c14;--surface-2:#131810;
-  --ink:#eef1e9;--ink-2:#b6bcab;--muted:#828874;
-  --line:#28301f;--grid:#242b1c;--baseline:#3a4230;
-  --brand:#7dc47f;--brand-soft:#213019;
-  --s1:#3987e5;--s3:#1fb989;--s4:#9b82f7;
-  --ok:#3cc65a;--ok-bg:#17301a;--warn:#e2a52a;--warn-bg:#312811;--crit:#e56b6b;--crit-bg:#331a1a;
-  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
-}}
-:root[data-theme="dark"]{
-  color-scheme:dark;
-  --page:#0e120d;--surface:#171c14;--surface-2:#131810;
-  --ink:#eef1e9;--ink-2:#b6bcab;--muted:#828874;
-  --line:#28301f;--grid:#242b1c;--baseline:#3a4230;
-  --brand:#7dc47f;--brand-soft:#213019;
-  --s1:#3987e5;--s3:#1fb989;--s4:#9b82f7;
-  --ok:#3cc65a;--ok-bg:#17301a;--warn:#e2a52a;--warn-bg:#312811;--crit:#e56b6b;--crit-bg:#331a1a;
-  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+  --page:#0C100E; --card:#151B17; --card2:#1B2320;
+  --ink:#EAF0E8; --ink2:#A8B3A4; --mut:#75816F;
+  --line:rgba(255,255,255,.08); --grid:rgba(255,255,255,.07); --track:rgba(255,255,255,.10);
+  --green:#3EA862; --blue:#5D97DD; --amber:#B4872F; --teal:#23A392; --red:#E4685F;
+  --green-soft:rgba(62,168,98,.16); --blue-soft:rgba(93,151,221,.15);
+  --amber-soft:rgba(180,135,47,.18); --red-soft:rgba(228,104,95,.16); --teal-soft:rgba(35,163,146,.16);
+  --tip-bg:#242D28; --tip-ink:#EAF0E8;
+  --shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.25);
 }
-*{box-sizing:border-box}
-body{margin:0;background:var(--page);color:var(--ink);
-  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.5}
-.wrap{max-width:1080px;margin:0 auto;padding:18px 22px 60px}
-header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
-h1{font-size:1.25rem;margin:0}
-.sub{color:var(--muted);font-size:.85rem}
-.spacer{flex:1}
-.updated{color:var(--muted);font-size:.82rem}
-.btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:9px;
-  padding:7px 14px;font:inherit;font-size:.86rem;font-weight:600;cursor:pointer}
-.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
-.btn:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
-.invite{background:var(--surface);border:1px solid var(--line);border-radius:10px;
-  padding:10px 14px;margin:8px 0 16px;font-size:.9rem;color:var(--ink-2)}
-.invite code{color:var(--ink)}
-table.roster{width:100%;border-collapse:collapse;font-size:.92rem;background:var(--surface);
-  border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
-.roster th{text-align:left;color:var(--muted);font-weight:600;font-size:.72rem;text-transform:uppercase;
-  letter-spacing:.05em;padding:10px 12px;border-bottom:1px solid var(--line)}
-.roster td{padding:11px 12px;border-bottom:1px solid var(--grid);vertical-align:middle}
-.roster tr.client{cursor:pointer}
-.roster tr.client:hover td{background:var(--brand-soft)}
-.roster td.num,.roster th.num{text-align:right;font-variant-numeric:tabular-nums}
-.tag{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;
-  font-size:.8rem;white-space:nowrap;margin:1px 0}
-.tag.green{background:var(--ok-bg);color:var(--ok)}
-.tag.yellow{background:var(--warn-bg);color:var(--warn)}
-.tag.red{background:var(--crit-bg);color:var(--crit)}
-.tablewrap{overflow-x:auto}
+/* Тёмная тема — единственная (фирменное решение, как у Oura/WHOOP): не зависит от темы устройства. */
 
-/* ---- детальная карточка ---- */
-.back{display:inline-flex;align-items:center;gap:6px;color:var(--brand);font-weight:600;
-  cursor:pointer;background:none;border:0;font:inherit;font-size:.9rem;padding:0;margin-bottom:6px}
-.chead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:2px}
-.chead h2{margin:0;font-size:1.3rem}
-.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:999px;font-size:.8rem;font-weight:600}
-.pill.warn{background:var(--warn-bg);color:var(--warn)}.pill.crit{background:var(--crit-bg);color:var(--crit)}.pill.ok{background:var(--ok-bg);color:var(--ok)}
-.tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:14px 0 16px}
-.tile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:11px 13px;box-shadow:var(--shadow)}
-.tile .lbl{color:var(--ink-2);font-size:.76rem}
-.tile .val{font-size:1.4rem;font-weight:650;letter-spacing:-.02em;margin-top:3px}
-.tile .val small{font-size:.82rem;font-weight:400;color:var(--muted)}
-.tile .d{font-size:.75rem;margin-top:1px;color:var(--muted)}
-.tile.warn{border-color:var(--warn)}.tile.crit{border-color:var(--crit)}
-.tile.empty .val{color:var(--muted);font-size:1rem;font-weight:500;margin-top:6px}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px 17px;box-shadow:var(--shadow);margin-bottom:14px}
-.card h3{margin:0 0 3px;font-size:.98rem}
-.card .cap{color:var(--muted);font-size:.8rem;margin:0 0 12px}
-.src{font-size:.7rem;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:6px}
-.charts{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-.chart .ct{font-size:.8rem;color:var(--ink-2)}
-.chart .cv{font-size:1.02rem;font-weight:650}
-.chart svg{width:100%;height:50px;display:block;margin-top:3px}
-.nodata{color:var(--muted);font-size:.86rem;background:var(--surface-2);border:1px dashed var(--line);
-  border-radius:10px;padding:14px;text-align:center}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.grid2 .card{margin:0}
-.wb{display:flex;flex-direction:column;gap:9px}
-.wb-row{display:grid;grid-template-columns:96px 1fr 26px;align-items:center;gap:9px;font-size:.86rem}
-.bar{height:8px;border-radius:5px;background:var(--grid);overflow:hidden}
-.bar>i{display:block;height:100%;border-radius:5px}
-.wb-row .n{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2)}
-.supp{display:flex;flex-direction:column;gap:7px}
-.supp-row{display:flex;align-items:center;gap:9px;font-size:.88rem}
-.supp-row .box{width:17px;height:17px;border-radius:5px;flex:none;display:flex;align-items:center;justify-content:center;font-size:.7rem;color:#fff}
-.box.on{background:var(--ok)}.box.off{background:transparent;border:1.5px solid var(--baseline)}
-.supp-row .tm{margin-left:auto;color:var(--muted);font-size:.78rem}
-.lab table{width:100%;border-collapse:collapse;font-size:.86rem}
-.lab th{text-align:left;color:var(--muted);font-weight:600;font-size:.7rem;text-transform:uppercase;padding:6px 6px;border-bottom:1px solid var(--line)}
-.lab td{padding:7px 6px;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
-.lab th.num,.lab td.num{text-align:right}
-.flag{font-size:.74rem;padding:1px 7px;border-radius:999px;font-weight:600}
-.flag.lo{background:var(--warn-bg);color:var(--warn)}.flag.hi{background:var(--crit-bg);color:var(--crit)}.flag.ok{background:var(--ok-bg);color:var(--ok)}
-.trend{font-size:.8rem}.trend.g{color:var(--ok)}.trend.b{color:var(--crit)}.trend.n{color:var(--muted)}
-.brief{background:linear-gradient(180deg,var(--surface),var(--surface-2));border:1px solid var(--brand);
-  border-radius:14px;padding:17px 19px;box-shadow:var(--shadow)}
-.brief .top{display:flex;align-items:center;gap:9px;margin-bottom:6px}
-.brief .top b{font-size:1rem}
-.brief pre{white-space:pre-wrap;font:inherit;margin:8px 0 0}
-.hint{color:var(--muted);font-size:.82rem}
-.rowbtns{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
-#empty{text-align:center;color:var(--ink-2);padding:60px 20px}
-/* ---- переключатель периода ---- */
-.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
-  padding:2px;gap:2px;margin:12px 0 2px;flex-wrap:wrap}
-.seg button{border:0;background:none;color:var(--ink-2);font:inherit;font-size:.84rem;font-weight:600;
-  padding:6px 14px;border-radius:8px;cursor:pointer;white-space:nowrap}
-.seg button.on{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
-.seg button:disabled{opacity:.55;cursor:progress}
-/* ---- точечные значения (режим «Сегодня») ---- */
-.pt{display:flex;gap:22px;flex-wrap:wrap}
-.pt .p .k{font-size:.76rem;color:var(--ink-2)}
-.pt .p .v{font-size:1.15rem;font-weight:650;margin-top:2px}
-.pt .p .v small{font-size:.8rem;font-weight:400;color:var(--muted)}
-/* ---- адгеренс по БАДам ---- */
-.adh{display:flex;flex-direction:column;gap:13px}
-.adh-row .top{display:flex;align-items:baseline;gap:8px;font-size:.88rem}
-.adh-row .nm{font-weight:600}
-.adh-row .plan{color:var(--muted);font-size:.78rem}
-.adh-row .cnt{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:650;white-space:nowrap}
-.adh-row .bar{display:block;margin-top:6px}
-.dots{display:flex;flex-wrap:wrap;gap:3px;margin-top:7px}
-.dots i{width:9px;height:9px;border-radius:50%;background:var(--grid);display:block}
-.dots i.on{background:var(--ok)}
-.dots i.today{outline:1.5px solid var(--brand);outline-offset:1px}
-.wk{display:flex;gap:4px;margin-top:7px;flex-wrap:wrap}
-.wk b{font-size:.72rem;font-weight:600;color:var(--ink-2);background:var(--surface-2);
-  border:1px solid var(--line);border-radius:6px;padding:1px 7px;font-variant-numeric:tabular-nums}
-.wk b.zero{color:var(--muted)}
-.stale{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
-  padding:9px 12px;margin-bottom:11px;color:var(--ink-2);font-size:.84rem}
-/* ---- блок кольца Oura ---- */
-.ogrid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
-.ogrid .k{font-size:.78rem;font-weight:650;color:var(--ink-2);margin-bottom:4px}
-.orow{display:flex;justify-content:space-between;gap:10px;font-size:.85rem;
-  padding:3px 0;border-bottom:1px solid var(--grid)}
-.orow b{font-variant-numeric:tabular-nums;font-weight:600}
-@media (max-width:920px){.ogrid{grid-template-columns:repeat(2,1fr)}}
-/* ---- что ел: дневник по дням с раскрытием состава ---- */
-.food{display:flex;flex-direction:column;gap:8px}
-.food details{border:1px solid var(--line);border-radius:10px;background:var(--surface-2);overflow:hidden}
-.food summary{cursor:pointer;list-style:none}
-.food summary::-webkit-details-marker{display:none}
-.food summary::marker{content:""}
-.food>details>summary{padding:9px 12px;font-size:.88rem;font-weight:650;
-  display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.food>details>summary:hover{background:var(--brand-soft)}
-.food .dsum{color:var(--muted);font-weight:400;font-size:.82rem}
-.food .meal{border:0;border-top:1px solid var(--line);border-radius:0;background:var(--surface)}
-.food .meal>summary{padding:8px 12px;display:flex;gap:9px;align-items:baseline;font-size:.87rem}
-.food .meal>summary:hover{background:var(--surface-2)}
-.food .meal .tm{color:var(--muted);font-variant-numeric:tabular-nums;flex:none;width:40px}
-.food .meal .nm{flex:1;min-width:120px}
-.food .meal .kc{font-variant-numeric:tabular-nums;color:var(--ink-2);flex:none}
-.sc{font-size:.72rem;font-weight:700;border-radius:999px;padding:1px 8px;flex:none;white-space:nowrap}
-.sc.ok{background:var(--ok-bg);color:var(--ok)}
-.sc.warn{background:var(--warn-bg);color:var(--warn)}
-.sc.crit{background:var(--crit-bg);color:var(--crit)}
-.food .body{padding:0 12px 11px 52px;font-size:.85rem;color:var(--ink-2)}
-.food .macro{display:flex;gap:14px;flex-wrap:wrap;margin:2px 0 6px;font-variant-numeric:tabular-nums}
-.food .items{margin:6px 0 0;padding-left:17px}
-.food .items li{margin:1px 0}
-.food .verdict{margin-top:7px;color:var(--ink)}
-.food .tip{margin-top:5px;color:var(--brand)}
-.food .assum{margin-top:5px;font-size:.8rem;color:var(--muted)}
-@media (max-width:920px){.tiles{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:var(--page); color:var(--ink);
+  font-family:"Golos Text",-apple-system,"Segoe UI",Roboto,sans-serif;
+  font-size:15px; line-height:1.45;
+  padding:18px 14px calc(30px + env(safe-area-inset-bottom));
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:560px;margin:0 auto}
+@media(min-width:960px){
+  .wrap{max-width:1020px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+  .col{display:flex;flex-direction:column;gap:14px}
+  .roster{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+}
+@media(max-width:959px){
+  .grid{display:flex;flex-direction:column;gap:12px} .col{display:contents}
+  .roster{display:flex;flex-direction:column;gap:10px}
+  /* на телефоне тренерское — наверх: кольца → подсветка → бриф → остальное */
+  #heroC{order:-3} #alertCard{order:-2} #briefCard{order:-1}
+}
+
+/* ---------- шапка ---------- */
+header{margin:2px 2px 14px}
+.brand{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);font-weight:600}
+.hrow{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:3px}
+h1{font-size:22px;font-weight:800;margin:0;letter-spacing:-.01em}
+.date{color:var(--ink2);font-size:13px}
+.seg{display:inline-flex;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:3px;margin-left:auto}
+.seg button{border:0;background:transparent;color:var(--ink2);font:inherit;font-size:12.5px;font-weight:600;
+  padding:5px 12px;border-radius:8px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--card2);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+.seg button:focus-visible,.back:focus-visible,button:focus-visible{outline:2px solid var(--green);outline-offset:1px}
+
+.invite{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:11px 14px;margin:0 0 12px;
+  font-size:13px;color:var(--ink2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.invite code{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:2px 8px;color:var(--ink);font-size:12.5px}
+.invite .copy{margin-left:auto;border:1px solid var(--line);background:var(--card2);color:var(--ink);
+  font:inherit;font-size:12px;font-weight:600;border-radius:8px;padding:4px 10px;cursor:pointer}
+
+/* ---------- карточки/чипы (как в client.html) ---------- */
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow)}
+.card h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);font-weight:600;margin:0 0 12px;
+  display:flex;align-items:center;gap:8px}
+.card h2 .r{margin-left:auto;letter-spacing:0;text-transform:none;font-weight:500;color:var(--ink2);font-size:12.5px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;border-radius:999px;padding:3px 10px}
+.chip.ok{background:var(--green-soft);color:var(--green)}
+.chip.warn{background:var(--amber-soft);color:var(--amber)}
+.chip.crit{background:var(--red-soft);color:var(--red)}
+.chip.mut{background:var(--track);color:var(--ink2)}
+.nodata{color:var(--mut);font-size:13.5px;background:var(--card2);border:1px dashed var(--line);
+  border-radius:12px;padding:14px;text-align:center}
+
+/* ---------- ростер ---------- */
+.client-card{cursor:pointer;transition:transform .12s ease}
+.client-card:hover{transform:translateY(-1px)}
+.cc-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.cc-name{font-size:16.5px;font-weight:800;letter-spacing:-.01em}
+.cc-stats{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
+.stat{flex:1;min-width:74px;background:var(--card2);border:1px solid var(--line);border-radius:11px;padding:7px 10px}
+.stat .v{font-size:15px;font-weight:800;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.stat .v small{font-size:10.5px;color:var(--ink2);font-weight:500}
+.stat .l{font-size:10.5px;color:var(--mut);margin-top:0px}
+.cc-open{margin-left:auto;color:var(--mut);font-size:18px}
+
+/* ---------- детальная ---------- */
+.back{display:inline-flex;align-items:center;gap:7px;background:none;border:0;color:var(--green);
+  font:inherit;font-size:14px;font-weight:600;cursor:pointer;padding:0;margin:0 0 12px}
+.dhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:2px}
+.dhead h1{font-size:21px}
+.dmeta{color:var(--ink2);font-size:13px;margin:2px 0 12px}
+
+/* кольца */
+.rings{display:flex;justify-content:space-between;gap:6px;max-width:620px;margin:0 auto}
+.ring{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0}
+.ring svg{width:min(104px,26vw);height:auto;display:block}
+.ring .num{font-size:24px;font-weight:800;letter-spacing:-.02em;fill:var(--ink)}
+.ring .unit{font-size:10.5px;fill:var(--ink2);font-weight:500}
+.ring .lab{font-size:12px;color:var(--ink2);font-weight:600}
+.ring .sub{font-size:11px;color:var(--mut);margin-top:-3px}
+@media(prefers-reduced-motion:no-preference){ .ring circle.p{transition:stroke-dashoffset .9s cubic-bezier(.2,.7,.2,1)} }
+
+/* питание/бары */
+.kline{display:flex;align-items:baseline;gap:8px;margin-bottom:10px}
+.kline .big{font-size:30px;font-weight:800;letter-spacing:-.02em}
+.kline .of{color:var(--ink2);font-size:13.5px}
+.macros{display:flex;flex-direction:column;gap:8px;margin:4px 0 12px}
+.m{display:grid;grid-template-columns:26px 1fr auto;gap:10px;align-items:center;font-size:13px}
+.m .n{color:var(--ink2);font-weight:600}
+.m .bar{height:7px;border-radius:4px;background:var(--track);overflow:hidden}
+.m .bar i{display:block;height:100%;border-radius:4px;background:var(--green)}
+.m .v{color:var(--ink2);font-variant-numeric:tabular-nums;font-size:12.5px}
+.wb .m{grid-template-columns:86px 1fr 30px}
+.quote{margin:10px 0 0;color:var(--mut);font-size:12.5px;border-left:2px solid var(--line);padding-left:9px}
+
+.wline{display:flex;align-items:baseline;gap:8px}
+.wline .big{font-size:26px;font-weight:800}
+.wbar{height:12px;border-radius:7px;background:var(--track);overflow:hidden;margin:10px 0 2px}
+.wbar i{display:block;height:100%;border-radius:7px;background:var(--blue)}
+
+.chart{margin-top:6px}
+.chart svg{width:100%;height:auto;display:block;overflow:visible}
+.axis{font-size:10px;fill:var(--mut)}
+.gridln{stroke:var(--grid);stroke-width:1}
+.target{stroke:var(--mut);stroke-width:1;stroke-dasharray:4 4;opacity:.7}
+.bar-h{cursor:pointer}
+.cap{color:var(--mut);font-size:11.5px;margin-top:6px}
+
+.facts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.fact{flex:1;min-width:84px;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:9px 11px}
+.fact .fv{font-size:17px;font-weight:800;letter-spacing:-.01em}
+.fact .fv small{font-size:11px;color:var(--ink2);font-weight:500}
+.fact .fl{font-size:11px;color:var(--mut);margin-top:1px}
+
+.wkdots{display:flex;justify-content:space-between;margin:4px 0 10px}
+.wd{display:flex;flex-direction:column;align-items:center;gap:5px;font-size:10.5px;color:var(--mut)}
+.wd i{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:12px;background:var(--track);color:var(--mut);font-style:normal}
+.wd i.done{background:var(--green-soft);color:var(--green)}
+.wd i.skip{background:var(--red-soft);color:var(--red)}
+.lastw{font-size:13.5px;color:var(--ink2)}
+.lastw b{color:var(--ink)}
+
+.supp{display:flex;flex-direction:column;gap:10px}
+.srow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;font-size:13.5px}
+.srow .nm{font-weight:500}
+.srow .nm small{color:var(--mut);font-weight:400;margin-left:5px}
+.sdots{display:flex;gap:4px}
+.sdots i{width:9px;height:9px;border-radius:50%;background:var(--track)}
+.sdots i.on{background:var(--green)}
+.srow .sc{color:var(--ink2);font-size:12.5px;font-variant-numeric:tabular-nums}
+
+.lab-t{width:100%;border-collapse:collapse;font-size:13px}
+.lab-t td{padding:8px 4px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.lab-t tr:last-child td{border-bottom:none}
+.lab-t .nm{color:var(--ink)}
+.lab-t .vl{text-align:right;color:var(--ink2);white-space:nowrap}
+.lab-t .fg{text-align:right}
+.morelink{background:none;border:0;color:var(--green);font:inherit;font-size:13px;font-weight:600;cursor:pointer;padding:8px 0 0}
+
+.weight-top{display:flex;align-items:baseline;gap:10px}
+.weight-top .big{font-size:30px;font-weight:800;letter-spacing:-.02em}
+.delta{font-size:13px;font-weight:600}
+.delta.g{color:var(--green)} .delta.b{color:var(--red)} .delta.n{color:var(--ink2)}
+
+/* ---------- тренерское ---------- */
+.notes{display:flex;flex-direction:column;gap:9px}
+.note-row{display:flex;gap:10px;font-size:13.5px;align-items:baseline}
+.note-row .nd{color:var(--mut);font-size:11.5px;flex:0 0 46px;font-variant-numeric:tabular-nums}
+.brief-card{border:1px solid var(--green);background:linear-gradient(180deg,var(--card),var(--card2))}
+.btn{border:1px solid var(--line);background:var(--card2);color:var(--ink);border-radius:11px;
+  padding:9px 16px;font:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+.btn.primary{background:var(--green);border-color:var(--green);color:#fff}
+.brief-out{white-space:pre-wrap;font-size:13.5px;color:var(--ink2);margin:12px 0 0;line-height:1.55}
+.brief-out b{color:var(--ink)}
+.rowbtns{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+
+footer{margin:22px 4px 0;color:var(--mut);font-size:12px;display:flex;gap:14px;flex-wrap:wrap;justify-content:space-between}
+footer a{color:var(--mut)}
+
+#tip{position:fixed;z-index:30;background:var(--tip-bg);color:var(--tip-ink);font-size:12px;font-weight:500;
+  padding:5px 9px;border-radius:8px;pointer-events:none;opacity:0;transform:translate(-50%,-130%);
+  white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.35)}
+#tip b{font-weight:700}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <!-- Список клиентов -->
+
+  <!-- ======== СПИСОК ======== -->
   <div id="listView">
     <header>
-      <h1>👥 <span id="brand">Чек Про</span></h1>
-      <span class="sub" id="coachname"></span>
-      <div class="spacer"></div>
-      <button class="btn" id="refresh">Обновить</button>
-      <span class="updated" id="updated"></span>
+      <div class="brand" id="brand">Кабинет тренера</div>
+      <div class="hrow">
+        <h1 id="coachname">Клиенты</h1>
+        <span class="date" id="updated"></span>
+      </div>
     </header>
-    <div class="invite" id="invite" hidden></div>
-    <div id="empty" hidden>
-      <p><b>Клиентов пока нет.</b><br>Отправь клиентам ссылку на бота (выше) — как только
-      кто-то нажмёт Start и даст согласие, он появится здесь.</p>
+    <div class="invite" id="invite" hidden>
+      🔗 Ссылка для клиентов: <code id="botlink"></code>
+      <button class="copy" id="copyLink">Скопировать</button>
     </div>
-    <div class="tablewrap" id="listwrap" hidden>
-      <table class="roster">
-        <thead><tr><th>Клиент</th><th>Статус</th><th class="num">Актив 7д</th>
-        <th class="num">Ккал сегодня</th><th class="num">Чек 7д</th><th class="num">Вода</th><th class="num">Трен.</th></tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
+    <div class="roster" id="roster"></div>
+    <div id="emptyRoster" class="nodata" hidden>Клиентов пока нет — отправь ссылку выше, бот сам всё объяснит.</div>
   </div>
 
-  <!-- Карточка клиента -->
+  <!-- ======== КАРТОЧКА КЛИЕНТА ======== -->
   <div id="detailView" hidden>
     <button class="back" id="back">← Все клиенты</button>
-    <div id="detail"></div>
+    <header style="margin-bottom:10px">
+      <div class="dhead"><h1 id="cname"></h1><span id="cpills"></span>
+        <div class="seg" role="group" aria-label="Период">
+          <button id="p7" aria-pressed="true">Неделя</button>
+          <button id="p30" aria-pressed="false">Месяц</button>
+        </div>
+      </div>
+      <div class="dmeta" id="cmeta"></div>
+    </header>
+
+    <div class="grid">
+      <div class="card" id="heroC" style="grid-column:1/-1"><div class="rings" id="rings"></div></div>
+      <div class="col">
+        <div class="card" id="alertCard" hidden></div>
+        <div class="card" id="foodCard"></div>
+        <div class="card" id="waterCard"></div>
+        <div class="card" id="trainCard"></div>
+        <div class="card" id="wbCard"></div>
+      </div>
+      <div class="col">
+        <div class="card brief-card" id="briefCard"></div>
+        <div class="card" id="sleepCard"></div>
+        <div class="card" id="weightCard"></div>
+        <div class="card" id="suppCard"></div>
+        <div class="card" id="labCard"></div>
+      </div>
+    </div>
   </div>
+
+  <footer><span id="footbrand"></span><a href="/privacy">Конфиденциальность</a></footer>
 </div>
+<div id="tip" role="status"></div>
+
 <script>
 "use strict";
-const $=(id)=>document.getElementById(id);
-const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const fmt=(n)=>(n??0).toLocaleString("ru-RU");
-const rub=(n)=>String(n).replace(".",",");
-const cssv=(n)=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-let clients=[];
+/* ================= МОК-ДАННЫЕ =================
+   Живые эндпоинты: /coach/api/me, /coach/api/clients, /coach/api/client?uid=&days=30, POST /coach/api/brief?uid= */
+const KEY=new URLSearchParams(location.search).get("key")||"";
+const q=(p)=>p+(p.includes("?")?"&":"?")+"key="+encodeURIComponent(KEY);
 
-async function loadMe(){
-  const me=await (await fetch("/coach/api/me")).json();
-  $("brand").textContent=me.brand||"Чек Про";
-  $("coachname").textContent=me.name?("кабинет · "+me.name):"кабинет тренера";
-  if(me.bot_username){$("invite").hidden=false;
-    $("invite").innerHTML="🔗 Ссылка для клиентов: <code>https://t.me/"+esc(me.bot_username)+"</code> — отправь её клиенту, бот сам всё объяснит.";}
-}
-async function loadList(){
-  const data=await (await fetch("/coach/api/clients",{cache:"no-store"})).json();
-  clients=data.clients||[];
-  $("updated").textContent="обновлено "+(data.generated_at||"");
-  $("empty").hidden=clients.length>0;$("listwrap").hidden=clients.length===0;
-  const icon=(l)=>l==="green"?"✅":(l==="yellow"?"⚠️":"🚨");
-  $("rows").innerHTML=clients.map(c=>`<tr class="client" data-uid="${c.uid}">
-    <td><b>${esc(c.name)}</b></td>
-    <td>${c.flags.map(f=>`<span class="tag ${f.level}">${icon(f.level)} ${esc(f.text)}</span>`).join(" ")}</td>
-    <td class="num">${c.days_logged}/7</td>
-    <td class="num">${fmt(c.kcal_today)}${c.kcal_target?" / "+fmt(c.kcal_target):""}</td>
-    <td class="num">${c.avg_chek!=null?rub(c.avg_chek):"—"}</td>
-    <td class="num">${fmt(c.water_today)}/${fmt(c.water_target)}</td>
-    <td class="num">${c.workouts_done}</td></tr>`).join("");
-  document.querySelectorAll("tr.client").forEach(tr=>tr.addEventListener("click",()=>openClient(Number(tr.dataset.uid))));
-}
-
-// --- рисование графиков ---
-function lineSvg(vals,max,colorVar){
-  const pts=vals.map(v=>v==null?null:v);
-  const w=200,h=50,pad=6;const xs=i=>pad+i*(w-2*pad)/(pts.length-1),ys=v=>h-pad-(v/max)*(h-2*pad);
-  let d="",started=false;pts.forEach((v,i)=>{if(v==null){started=false;return;}d+=(started?" L":"M")+xs(i).toFixed(1)+" "+ys(v).toFixed(1);started=true;});
-  const col=cssv(colorVar);
-  let dots="";pts.forEach((v,i)=>{if(v!=null)dots+=`<circle cx="${xs(i).toFixed(1)}" cy="${ys(v).toFixed(1)}" r="3" fill="${col}" stroke="var(--surface)" stroke-width="1.5"/>`;});
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${d?`<path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`:""}${dots}</svg>`;
-}
-function barsSvg(vals,max,target,colorVar){
-  const w=200,h=50,pad=6,n=vals.length,bw=Math.min(16,(w-2*pad)/n-3);const col=cssv(colorVar);
-  let bars="";vals.forEach((v,i)=>{const bh=(v/max)*(h-2*pad);const x=pad+i*((w-2*pad)/n)+((w-2*pad)/n-bw)/2;
-    if(v>0)bars+=`<rect x="${x.toFixed(1)}" y="${(h-pad-bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2.5" fill="${col}"/>`;});
-  let tl="";if(target){const ty=h-pad-(target/max)*(h-2*pad);tl=`<line x1="${pad}" x2="${w-pad}" y1="${ty.toFixed(1)}" y2="${ty.toFixed(1)}" stroke="${cssv('--baseline')}" stroke-width="1" stroke-dasharray="4 3"/>`;}
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${bars}${tl}</svg>`;
-}
-function niceMax(m){const st=[100,200,250,500,1000,2000,2500,5000];for(const s of st){if(Math.ceil(m/s)<=5)return Math.ceil(m/s)*s;}return Math.ceil(m/5000)*5000;}
-
-function tile(cls,lbl,val,d){return `<div class="tile ${cls||''}"><div class="lbl">${lbl}</div><div class="val">${val}</div>${d?`<div class="d">${d}</div>`:""}</div>`;}
-// один кружок на день окна: залит — БАД отмечен принятым
-function adhDots(x,wd){
-  const dates=windowDates(wd),set=new Set(x.taken_dates||[]),today=isoDate(new Date());
-  return `<div class="dots">${dates.map(d=>
-    `<i class="${set.has(d)?"on":""}${d===today?" today":""}" title="${d}"></i>`).join("")}</div>`;
-}
-// на месяце-квартале точек слишком много — сворачиваем в недельные счётчики
-function adhWeeks(x,wd){
-  const dates=windowDates(wd),set=new Set(x.taken_dates||[]),weeks=new Map();
-  dates.forEach(d=>{const k=isoWeekKey(d);
-    if(!weeks.has(k))weeks.set(k,{n:0,first:d});
-    if(set.has(d))weeks.get(k).n++;});
-  return `<div class="wk">${[...weeks.values()].map(w=>
-    `<b class="${w.n?"":"zero"}" title="неделя с ${w.first}">${w.n}</b>`).join("")}</div>`;
-}
-function emptyTile(lbl,txt){return `<div class="tile empty"><div class="lbl">${lbl}</div><div class="val">${txt}</div></div>`;}
-
-// --- период просмотра ---
-const PERIODS=[
-  {key:"1",   btn:"Сегодня", cap:"за сегодня"},
-  {key:"7",   btn:"Неделя",  cap:"за неделю"},
-  {key:"30",  btn:"Месяц",   cap:"за месяц"},
-  {key:"365", btn:"Год",     cap:"за год"},
-  {key:"all", btn:"Всё",     cap:"за всё время"},
-];
-let period="7",curUid=null;
-const curPeriod=()=>PERIODS.find(x=>x.key===period)||PERIODS[1];
-
-const isoDate=(d)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-function windowDates(n){
-  const out=[],now=new Date();
-  for(let i=n-1;i>=0;i--){const d=new Date(now);d.setDate(now.getDate()-i);out.push(isoDate(d));}
+function genSeries(seed, wBase){
+  const out=[]; const today=new Date("2026-08-28"); let w=wBase;
+  for(let i=29;i>=0;i--){
+    const d=new Date(today); d.setDate(d.getDate()-i);
+    const wd=d.getDay();
+    w+=(Math.sin(i*seed)*0.09-0.02);
+    out.push({date:d.toISOString().slice(0,10),
+      label:["Вс","Пн","Вт","Ср","Чт","Пт","Сб"][wd],
+      kcal:Math.max(800,1300+Math.round(300*Math.sin(i*seed))+(wd%6===0?250:0)),
+      water:1100+Math.round(600*Math.abs(Math.sin(i*seed*1.4))),
+      chek:4+Math.round(3*Math.abs(Math.sin(i*seed*0.8))),
+      workout:(wd===1||wd===3||wd===5)?(i%9===4?"skip":"done"):"none",
+      sleep_h:+(5.5+1.8*Math.abs(Math.sin(i*seed*0.6))).toFixed(1),
+      readiness:Math.round(52+28*Math.abs(Math.sin(i*seed*0.5))),
+      weight:+w.toFixed(1)});
+  }
   return out;
 }
-function isoWeekKey(ds){
-  const d=new Date(ds+"T00:00:00"),t=new Date(d);
-  t.setDate(d.getDate()+4-(d.getDay()||7));
-  const jan1=new Date(t.getFullYear(),0,1);
-  return t.getFullYear()+"-W"+String(Math.ceil((((t-jan1)/86400000)+1)/7)).padStart(2,"0");
+const MOCK_ME={name:"Алексей Кузнецов", brand:"Кузнецов · Метод", bot_username:"kuznetsov_coach_bot"};
+const MOCK_CLIENTS=[
+  {uid:1,name:"Марина К.",flags:[{level:"crit",text:"готовность 3 дня низкая"},{level:"warn",text:"ест ниже нормы"}],
+   days_logged:6,kcal_today:1450,kcal_target:2400,avg_chek:6.4,water_today:1500,water_target:2200,workouts_done:2},
+  {uid:2,name:"Дмитрий С.",flags:[{level:"ok",text:"в порядке"}],
+   days_logged:7,kcal_today:2100,kcal_target:2400,avg_chek:7.8,water_today:2600,water_target:2800,workouts_done:3},
+  {uid:3,name:"Аня Р.",flags:[{level:"crit",text:"молчит 3 дня"}],
+   days_logged:2,kcal_today:0,kcal_target:1600,avg_chek:null,water_today:0,water_target:2000,workouts_done:0},
+  {uid:4,name:"Игорь В.",flags:[{level:"ok",text:"в порядке"}],
+   days_logged:5,kcal_today:1900,kcal_target:2500,avg_chek:6.9,water_today:2400,water_target:3000,workouts_done:4},
+  {uid:5,name:"Лена Т.",flags:[{level:"warn",text:"качество еды низкое"}],
+   days_logged:6,kcal_today:980,kcal_target:1650,avg_chek:4.6,water_today:1900,water_target:2200,workouts_done:1},
+];
+function mockDetail(uid){
+  const c=MOCK_CLIENTS.find(x=>x.uid===uid)||MOCK_CLIENTS[0];
+  return {
+    name:c.name, meta:{sex:"жен", age:34, goal:"снижение веса"},
+    flags:c.flags,
+    me:{brand:MOCK_ME.brand, coach:MOCK_ME.name},
+    today:{kcal:c.kcal_today, protein:74, fat:48, carbs:132, water:c.water_today},
+    targets:{kcal:c.kcal_target, protein:110, fat:70, carbs:250, water:c.water_target},
+    stats:{avg_chek:c.avg_chek??5.5},
+    series:genSeries(0.9+uid*0.17, 82+uid),
+    wellbeing:{avg:{energy:5.4,mood:6.1,stress:6.8,libido:4.2},latest:{note:"Сплю плохо, много стресса на работе"}},
+    supplements:[
+      {name:"Витамин D 5000",timing:"утром",plan:7,dots:[1,1,1,0,1,1,1]},
+      {name:"Омега-3",timing:"с едой",plan:7,dots:[1,1,0,0,1,1,0]},
+      {name:"Магний",timing:"на ночь",plan:7,dots:[0,1,0,0,1,0,0]},
+    ],
+    labs:{last_date:"10.08",total:14,markers:[
+      {name:"Ферритин",value:"18 нг/мл",ref:"30–150",flag:"низко",trend:"↓ было 24"},
+      {name:"Витамин D",value:"19 нг/мл",ref:"30–100",flag:"низко",trend:"↑ было 16"},
+      {name:"Гемоглобин",value:"128 г/л",ref:"120–150",flag:"норма",trend:"↑ было 126"},
+      {name:"ТТГ",value:"2,1 мЕд/л",ref:"0,4–4,0",flag:"норма",trend:"↓ было 2,3"},
+    ]},
+    workouts:{last:{when:"вчера",dur:40,kcal:310,src:"Oura",desc:"турник + брусья"},month_done:9},
+    gadgets:{primary:"oura",oura:{connected:true,readiness:64,sleep_h:6.2,hrv:48,rhr:58},whoop:{connected:false}},
+    weight:{current:82.4,delta30:-0.6},
+    notes:[
+      {date:"27.08",text:"Спросила, можно ли кофе после 18:00 — переадресовал тебе."},
+      {date:"25.08",text:"3 дня подряд ужин после 22:00, сон в эти ночи короче на ~1 ч."},
+    ],
+  };
 }
-const planLabel=(n)=>n>=7?"каждый день":`${n} раз${n>=2&&n<=4?"а":""} в неделю`;
-const plural=(n,one,few,many)=>{const m=n%100,k=n%10;
-  return (m>=11&&m<=14)?many:(k===1?one:(k>=2&&k<=4?few:many));};
-const scoreCls=(v)=>v==null?"":(v>=8?"ok":(v>=5.5?"warn":"crit"));
+const MOCK_BRIEF = "ЧТО ПРОИСХОДИТ\nМарина третью неделю недосыпает: готовность 60–64, сон около 6 часов. Качество еды просело — Чек 6,4/10, калории ниже нормы (в среднем 1 340 при цели 2 400). Стресс высокий (6,8/10).\n\nСВЯЗИ\nНизкий ферритин (18) и витамин D (19) вместе с недосыпом и дефицитом калорий — классическая связка «нет сил». Поздние ужины совпадают с короткими ночами.\n\nНА ЧТО ОБРАТИТЬ ВНИМАНИЕ\n— Ферритин и витамин D ниже нормы второй месяц подряд.\n— Ест заметно ниже нормы: риск терять мышцы, а не жир.\n— Магний на ночь пропускает 5 дней из 7.";
 
+const $=(id)=>document.getElementById(id);
+const fmt=(n)=>Math.round(n||0).toLocaleString("ru-RU");
+const f1=(n)=>(+n).toLocaleString("ru-RU",{minimumFractionDigits:1,maximumFractionDigits:1});
+let state={days:7, uid:null, detail:null};
+
+/* ---------- тултип ---------- */
+const tip=$("tip");
+function bindTips(root){
+  root.querySelectorAll("[data-tip]").forEach(el=>{
+    const show=()=>{ tip.innerHTML=el.dataset.tip; tip.style.opacity=1;
+      const r=el.getBoundingClientRect(); tip.style.left=(r.left+r.width/2)+"px"; tip.style.top=(r.top)+"px"; };
+    const hide=()=>{ tip.style.opacity=0; };
+    el.addEventListener("pointerenter",show); el.addEventListener("pointerleave",hide);
+    el.addEventListener("click",()=>{ show(); setTimeout(hide,1600); });
+  });
+}
+addEventListener("scroll",()=>{ tip.style.opacity=0; },{passive:true});
+
+/* ---------- примитивы (как в client.html) ---------- */
+function ring(val,max,color,centerTxt,unitTxt){
+  const r=40,C=2*Math.PI*r,frac=Math.max(0,Math.min(1,(val||0)/max)),off=C*(1-frac);
+  return `<svg viewBox="0 0 100 100" role="img" aria-label="${centerTxt} ${unitTxt||''}">
+    <circle cx="50" cy="50" r="${r}" fill="none" stroke="var(--track)" stroke-width="9"/>
+    <circle class="p" cx="50" cy="50" r="${r}" fill="none" stroke="${color}" stroke-width="9"
+      stroke-linecap="round" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"
+      transform="rotate(-90 50 50)"/>
+    <text class="num" x="50" y="50" text-anchor="middle" dominant-baseline="central">${centerTxt}</text>
+    <text class="unit" x="50" y="66" text-anchor="middle">${unitTxt||""}</text></svg>`;
+}
+function hbar(name,val,target,unit){
+  const pct=Math.min(100,Math.round(100*val/target));
+  return `<div class="m"><span class="n">${name}</span><span class="bar"><i style="width:${pct}%"></i></span>
+    <span class="v">${fmt(val)} / ${fmt(target)} ${unit}</span></div>`;
+}
+function barsChart(items,{target,colorVar,unit}){
+  const W=320,H=92,padB=16,padT=6,n=items.length;
+  const max=Math.max(target||0,...items.map(d=>d.v))*1.08;
+  const bw=Math.min(18,(W/n)-2);
+  const y=(v)=>H-padB-(v/max)*(H-padB-padT);
+  let out=`<line class="gridln" x1="0" x2="${W}" y1="${y(max*0.5).toFixed(1)}" y2="${y(max*0.5).toFixed(1)}"/>`;
+  items.forEach((d,i)=>{
+    const x=(W/n)*i+((W/n)-bw)/2,bh=Math.max(2,(d.v/max)*(H-padB-padT));
+    out+=`<rect class="bar-h" x="${x.toFixed(1)}" y="${(H-padB-bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="3"
+      fill="var(${colorVar})" data-tip="<b>${fmt(d.v)}</b> ${unit} · ${d.date||d.l}"/>`;
+    if(d.l!==undefined && (n<=7||i%5===0)) out+=`<text class="axis" x="${(x+bw/2).toFixed(1)}" y="${H-3}" text-anchor="middle">${d.l}</text>`;
+  });
+  if(target) out+=`<line class="target" x1="0" x2="${W}" y1="${y(target).toFixed(1)}" y2="${y(target).toFixed(1)}"/>`;
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${H}">${out}</svg></div>`;
+}
+function lineChart(items,{target,colorVar,unit,ymin=0,ymax}){
+  const W=320,H=92,padB=16,padT=8,n=items.length;
+  const vals=items.map(d=>d.v).filter(v=>v!=null);
+  const max=ymax||Math.max(target||0,...vals)*1.06,min=ymin;
+  const x=(i)=>6+i*(W-12)/(n-1),y=(v)=>H-padB-((v-min)/(max-min))*(H-padB-padT);
+  let d="",started=false,dots="",labels="";
+  let out=`<line class="gridln" x1="0" x2="${W}" y1="${y(min+(max-min)*0.5).toFixed(1)}" y2="${y(min+(max-min)*0.5).toFixed(1)}"/>`;
+  items.forEach((p,i)=>{
+    if(p.v==null){started=false;return;}
+    d+=(started?" L":"M")+x(i).toFixed(1)+" "+y(p.v).toFixed(1);started=true;
+    const last=i===n-1;
+    dots+=`<circle cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${last?4:2.6}" fill="var(${colorVar})"
+      stroke="var(--card)" stroke-width="${last?2:1.2}" class="bar-h" data-tip="<b>${f1(p.v)}</b> ${unit} · ${p.date||p.l}"/>`;
+    if(p.l!==undefined && (n<=7||i%5===0)) labels+=`<text class="axis" x="${x(i).toFixed(1)}" y="${H-3}" text-anchor="middle">${p.l}</text>`;
+  });
+  if(target) out+=`<line class="target" x1="0" x2="${W}" y1="${y(target).toFixed(1)}" y2="${y(target).toFixed(1)}"/>`;
+  out+=`<path d="${d}" fill="none" stroke="var(${colorVar})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${H}">${out}${dots}${labels}</svg></div>`;
+}
+function spark(items,colorVar){
+  const W=120,H=34,n=items.length,vals=items.map(d=>d.v);
+  const max=Math.max(...vals),min=Math.min(...vals),rng=(max-min)||1;
+  const x=(i)=>2+i*(W-4)/(n-1),y=(v)=>H-4-((v-min)/rng)*(H-8);
+  let d="";vals.forEach((v,i)=>{d+=(i?" L":"M")+x(i).toFixed(1)+" "+y(v).toFixed(1);});
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:120px"><path d="${d}" fill="none" stroke="var(${colorVar})" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="${x(n-1).toFixed(1)}" cy="${y(vals[n-1]).toFixed(1)}" r="3.4" fill="var(${colorVar})" stroke="var(--card)" stroke-width="1.6"/></svg>`;
+}
+function readinessColor(v){return v==null?"var(--mut)":v>=70?"var(--green)":v>=45?"var(--amber)":"var(--red)";}
+function readinessWord(v){return v==null?"—":v>=70?"хорошая":v>=45?"средняя":"низкая";}
+const flagChip=(f)=>`<span class="chip ${f.level==='ok'?'ok':f.level==='warn'?'warn':'crit'}">${f.level==='ok'?'✓':f.level==='warn'?'⚠':'●'} ${f.text}</span>`;
+
+/* ---------- ростер ---------- */
+async function loadList(){
+  let me=MOCK_ME, clients=MOCK_CLIENTS;
+  try{ const r=await fetch(q("/coach/api/me"),{cache:"no-store"}); if(r.ok) me=await r.json(); }catch(e){}
+  try{ const r=await fetch(q("/coach/api/clients"),{cache:"no-store"}); if(r.ok){const j=await r.json(); if(j.clients) clients=j.clients;} }catch(e){}
+  $("brand").textContent=me.brand||"Кабинет тренера";
+  $("coachname").textContent="Клиенты";
+  $("footbrand").textContent=(me.brand||"")+" · кабинет тренера";
+  $("updated").textContent="обновлено "+new Date().toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
+  if(me.bot_username){ $("invite").hidden=false; $("botlink").textContent="t.me/"+me.bot_username;
+    $("copyLink").onclick=async()=>{ try{ await navigator.clipboard.writeText("https://t.me/"+me.bot_username);
+      $("copyLink").textContent="Скопировано ✓"; setTimeout(()=>$("copyLink").textContent="Скопировать",1500);}catch(e){} }; }
+  const order={crit:0,warn:1,ok:2};
+  clients=[...clients].sort((a,b)=>order[a.flags[0]?.level??"ok"]-order[b.flags[0]?.level??"ok"]);
+  $("emptyRoster").hidden=clients.length>0;
+  $("roster").innerHTML=clients.map(c=>`
+    <div class="card client-card" data-uid="${c.uid}" role="button" tabindex="0" aria-label="Открыть ${c.name}">
+      <div class="cc-top"><span class="cc-name">${c.name}</span>${c.flags.map(flagChip).join(" ")}<span class="cc-open">›</span></div>
+      <div class="cc-stats">
+        <div class="stat"><div class="v">${fmt(c.kcal_today)}${c.kcal_target?` <small>/ ${fmt(c.kcal_target)}</small>`:""}</div><div class="l">ккал сегодня</div></div>
+        <div class="stat"><div class="v">${c.avg_chek!=null?f1(c.avg_chek)+'<small>/10</small>':"—"}</div><div class="l">Чек 7д</div></div>
+        <div class="stat"><div class="v">${f1(c.water_today/1000)}<small> / ${f1(c.water_target/1000)} л</small></div><div class="l">вода</div></div>
+        <div class="stat"><div class="v">${c.days_logged}<small>/7</small></div><div class="l">актив</div></div>
+      </div>
+    </div>`).join("");
+  document.querySelectorAll(".client-card").forEach(el=>{
+    const open=()=>openClient(+el.dataset.uid);
+    el.addEventListener("click",open);
+    el.addEventListener("keydown",(e)=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();open();}});
+  });
+}
+
+/* ---------- карточка клиента ---------- */
 async function openClient(uid){
-  curUid=uid;
-  $("listView").hidden=true;$("detailView").hidden=false;window.scrollTo(0,0);
-  $("detail").innerHTML="<p class='hint'>Загружаю…</p>";
-  await loadDetail();
+  state.uid=uid; state.days=7;
+  $("listView").hidden=true; $("detailView").hidden=false; scrollTo(0,0);
+  let D=null;
+  try{ const r=await fetch(q(`/coach/api/client?uid=${uid}&days=30`),{cache:"no-store"}); if(r.ok) D=await r.json(); }catch(e){}
+  if(!D||!D.series) D=mockDetail(uid);
+  state.detail=D;
+  renderDetail();
+}
+function renderDetail(){
+  const D=state.detail, S=D.series.slice(-state.days), S7=D.series.slice(-7);
+  const t=D.today,tg=D.targets,g=D.gadgets||{};
+  const prim=(g.primary==="whoop"?g.whoop:g.oura)||{connected:false};
+  const primName=g.primary==="whoop"?"WHOOP":"Oura";
+  $("p7").setAttribute("aria-pressed",state.days===7);
+  $("p30").setAttribute("aria-pressed",state.days===30);
+  $("cname").textContent=D.name;
+  $("cpills").innerHTML=(D.flags||[]).map(flagChip).join(" ");
+  const meta=D.meta||{};
+  $("cmeta").textContent=[meta.sex,meta.age?meta.age+" лет":null,meta.goal?("цель: "+meta.goal):null].filter(Boolean).join(" · ");
+
+  const rc=prim.connected?readinessColor(prim.readiness):"var(--mut)";
+  $("rings").innerHTML=`
+    <div class="ring">${ring(t.kcal,tg.kcal,"var(--green)",fmt(t.kcal),"из "+fmt(tg.kcal))}
+      <span class="lab">Питание</span><span class="sub">ккал сегодня</span></div>
+    <div class="ring">${prim.connected?ring(prim.readiness,100,rc,prim.readiness,readinessWord(prim.readiness)):ring(0,100,"var(--mut)","—","")}
+      <span class="lab">Готовность</span><span class="sub">${prim.connected?primName:"гаджет не подключён"}</span></div>
+    <div class="ring">${prim.connected?ring(prim.sleep_h,8,"var(--blue)",f1(prim.sleep_h),"из 8 ч"):ring(0,8,"var(--mut)","—","")}
+      <span class="lab">Сон</span><span class="sub">${prim.connected?"прошлая ночь":"—"}</span></div>`;
+
+  /* заметки ассистента */
+  if(D.notes&&D.notes.length){
+    $("alertCard").hidden=false;
+    $("alertCard").innerHTML=`<h2>Ассистент подсветил</h2><div class="notes">
+      ${D.notes.map(n=>`<div class="note-row"><span class="nd">${n.date}</span><span>${n.text}</span></div>`).join("")}</div>`;
+  } else $("alertCard").hidden=true;
+
+  $("foodCard").innerHTML=`
+    <h2>Питание <span class="r"><span class="chip ${D.stats.avg_chek>=6?'ok':'warn'}">Чек ${f1(D.stats.avg_chek)}/10</span></span></h2>
+    <div class="kline"><span class="big">${fmt(t.kcal)}</span><span class="of">из ${fmt(tg.kcal)} ккал</span></div>
+    <div class="macros">${hbar("Б",t.protein,tg.protein,"г")}${hbar("Ж",t.fat,tg.fat,"г")}${hbar("У",t.carbs,tg.carbs,"г")}</div>
+    ${barsChart(S.map(d=>({v:d.kcal,l:d.label,date:d.date})),{target:tg.kcal,colorVar:"--green",unit:"ккал"})}
+    <div class="cap">Калории по дням · пунктир — норма клиента</div>`;
+
+  const wp=Math.min(100,Math.round(100*t.water/tg.water));
+  $("waterCard").innerHTML=`
+    <h2>Вода</h2>
+    <div class="wline"><span class="big">${f1(t.water/1000)}</span><span class="of">из ${f1(tg.water/1000)} л</span>
+      <span style="margin-left:auto" class="chip ${wp>=100?'ok':'mut'}">${wp}%</span></div>
+    <div class="wbar"><i style="width:${wp}%"></i></div>
+    ${barsChart(S.map(d=>({v:d.water,l:d.label,date:d.date})),{target:tg.water,colorVar:"--blue",unit:"мл"})}`;
+
+  const wk=S7.map(d=>({l:d.label,s:d.workout}));
+  const lastW=D.workouts&&D.workouts.last;
+  $("trainCard").innerHTML=`
+    <h2>Тренировки ${D.workouts?`<span class="r">${D.workouts.month_done} за месяц</span>`:""}</h2>
+    <div class="wkdots">${wk.map(d=>`<span class="wd"><i class="${d.s==='done'?'done':d.s==='skip'?'skip':''}">${d.s==='done'?'✓':d.s==='skip'?'—':''}</i>${d.l}</span>`).join("")}</div>
+    ${lastW?`<div class="lastw">Последняя: <b>${lastW.when}</b>, ${lastW.dur} мин · <b>${lastW.kcal} ккал</b>
+      <span style="color:var(--mut)">(${lastW.src})</span><br><span style="color:var(--mut)">${lastW.desc||""}</span></div>`
+      :`<div class="nodata">Тренировок пока нет</div>`}`;
+
+  if(D.wellbeing&&D.wellbeing.avg){
+    const a=D.wellbeing.avg;
+    const row=(nm,v,cv)=>v==null?"":`<div class="m"><span class="n">${nm}</span>
+      <span class="bar"><i style="width:${v*10}%;background:var(${cv})"></i></span><span class="v">${f1(v)}</span></div>`;
+    $("wbCard").innerHTML=`<h2>Самочувствие <span class="r">среднее за неделю</span></h2>
+      <div class="wb">${row("Энергия",a.energy,"--amber")}${row("Настроение",a.mood,"--blue")}${row("Стресс",a.stress,"--red")}${row("Либидо",a.libido,"--teal")}</div>
+      ${D.wellbeing.latest?.note?`<p class="quote">«${D.wellbeing.latest.note}»</p>`:""}`;
+  } else $("wbCard").innerHTML=`<h2>Самочувствие</h2><div class="nodata">Данных нет</div>`;
+
+  if(prim.connected){
+    $("sleepCard").innerHTML=`
+      <h2>Сон и восстановление <span class="r"><span class="chip ok">${primName} · основной</span></span></h2>
+      ${lineChart(S.map(d=>({v:d.sleep_h,l:d.label,date:d.date})),{target:8,colorVar:"--blue",unit:"ч",ymin:4,ymax:9.4})}
+      <div class="cap">Сон по ночам · пунктир — цель 8 ч</div>
+      <div class="facts">
+        <div class="fact"><div class="fv">${prim.hrv} <small>мс</small></div><div class="fl">HRV</div></div>
+        <div class="fact"><div class="fv">${prim.rhr} <small>уд/мин</small></div><div class="fl">пульс покоя</div></div>
+        <div class="fact"><div class="fv" style="color:${readinessColor(prim.readiness)}">${prim.readiness}</div><div class="fl">готовность</div></div>
+      </div>
+      <div style="margin-top:10px">${(g.whoop&&g.whoop.connected)?'<span class="chip ok">WHOOP подключён</span>':'<span class="chip mut">WHOOP не подключён</span>'}</div>`;
+  } else $("sleepCard").innerHTML=`<h2>Сон и восстановление</h2><div class="nodata">Гаджет не подключён — клиент может сказать ассистенту «подключи кольцо»</div>`;
+
+  if(D.weight&&D.weight.current!=null){
+    const ws=D.series.filter(d=>d.weight!=null).slice(-30).map(d=>({v:d.weight}));
+    const dcls=D.weight.delta30<0?"g":D.weight.delta30>0?"b":"n";
+    $("weightCard").innerHTML=`<h2>Вес</h2><div class="weight-top">
+      <span class="big">${f1(D.weight.current)} <small style="font-size:14px;color:var(--ink2);font-weight:500">кг</small></span>
+      ${D.weight.delta30!=null?`<span class="delta ${dcls}">${D.weight.delta30>0?"+":""}${f1(D.weight.delta30)} за месяц</span>`:""}
+      ${ws.length>2?`<span style="margin-left:auto">${spark(ws,"--green")}</span>`:""}</div>`;
+  } else $("weightCard").innerHTML=`<h2>Вес</h2><div class="nodata">Данных нет</div>`;
+
+  if(D.supplements&&D.supplements.length){
+    $("suppCard").innerHTML=`<h2>БАДы <span class="r">эта неделя</span></h2><div class="supp">
+      ${D.supplements.map(s=>{const taken=s.dots.filter(Boolean).length;
+        return `<div class="srow"><span class="nm">${s.name}<small>${s.timing}</small></span>
+          <span class="sdots">${s.dots.map(x=>`<i class="${x?'on':''}"></i>`).join("")}</span>
+          <span class="sc">${taken} из ${s.plan}</span></div>`;}).join("")}</div>`;
+  } else $("suppCard").innerHTML=`<h2>БАДы</h2><div class="nodata">Данных нет</div>`;
+
+  if(D.labs&&D.labs.markers&&D.labs.markers.length){
+    const abn=D.labs.markers.filter(m=>m.flag!=="норма");
+    const rows=(list)=>list.map(m=>`<tr><td class="nm">${m.name}</td>
+      <td class="vl">${m.value}<br><small style="color:var(--mut)">${m.ref} · ${m.trend}</small></td>
+      <td class="fg"><span class="chip ${m.flag==="норма"?"ok":"warn"}">${m.flag==="норма"?"норма":"⚠ "+m.flag}</span></td></tr>`).join("");
+    $("labCard").innerHTML=`<h2>Анализы <span class="r">от ${D.labs.last_date}</span></h2>
+      ${abn.length?`<p style="margin:0 0 6px;font-size:13.5px;color:var(--ink2)">${abn.length} из ${D.labs.total} вне нормы</p>`:""}
+      <table class="lab-t" id="labRows">${rows(D.labs.markers.slice(0,3))}</table>
+      <button class="morelink" id="labMore">Показать все ${D.labs.total} →</button>`;
+    $("labMore").addEventListener("click",()=>{ $("labRows").innerHTML=rows(D.labs.markers); $("labMore").remove(); });
+  } else $("labCard").innerHTML=`<h2>Анализы</h2><div class="nodata">Данных нет — клиент присылает боту фото или PDF бланка</div>`;
+
+  /* AI-бриф */
+  $("briefCard").innerHTML=`
+    <h2>AI-бриф недели</h2>
+    <p style="margin:0;font-size:13px;color:var(--ink2)">Свяжет еду, сон, анализы и самочувствие в короткий разбор (30–60 сек).</p>
+    <div class="rowbtns"><button class="btn primary" id="briefBtn">Собрать бриф</button></div>
+    <div id="briefOut"></div>`;
+  $("briefBtn").addEventListener("click",makeBrief);
+
+  bindTips(document.body);
+}
+async function makeBrief(){
+  const btn=$("briefBtn"),out=$("briefOut");
+  btn.disabled=true;btn.textContent="Думаю…";
+  let text=null;
+  try{ const r=await fetch(q(`/coach/api/brief?uid=${state.uid}`),{method:"POST"});
+    if(r.ok){const j=await r.json(); text=j.brief;} }catch(e){}
+  if(!text) text=MOCK_BRIEF;
+  out.innerHTML=`<div class="brief-out">${text.replace(/&/g,"&amp;").replace(/</g,"&lt;")
+      .replace(/^([А-ЯЁ ]{4,})$/gm,"<b>$1</b>")}</div>
+    <div class="rowbtns"><button class="btn" id="copyBrief">Скопировать</button></div>`;
+  $("copyBrief").addEventListener("click",async()=>{ try{ await navigator.clipboard.writeText(text);
+    $("copyBrief").textContent="Скопировано ✓"; }catch(e){} });
+  btn.disabled=false;btn.textContent="Собрать бриф";
 }
 
-async function loadDetail(){
-  const p=curPeriod();
-  try{
-    const s=await (await fetch(`/coach/api/client?uid=${curUid}&days=${p.key}`)).json();
-    renderDetail(curUid,s,p);
-  }catch(e){
-    $("detail").innerHTML="<p class='hint'>⚠️ Не удалось загрузить — попробуй ещё раз</p>";
-  }
-}
-
-function segHtml(){
-  return `<div class="seg" id="seg">${PERIODS.map(p=>
-    `<button data-k="${p.key}" class="${p.key===period?"on":""}">${p.btn}</button>`).join("")}</div>`;
-}
-function wireSeg(){
-  const seg=$("seg");if(!seg)return;
-  seg.querySelectorAll("button").forEach(b=>b.addEventListener("click",async()=>{
-    if(b.dataset.k===period)return;
-    period=b.dataset.k;
-    seg.querySelectorAll("button").forEach(x=>{x.classList.toggle("on",x.dataset.k===period);x.disabled=true;});
-    await loadDetail();
-  }));
-}
-
-function renderDetail(uid,s,p){
-  p=p||curPeriod();
-  const t=s.today,tg=s.targets,st=s.stats;
-  const isDay=(s.days||7)<=1;          // режим «Сегодня»
-  const byWeek=s.bucket==="week";      // ряды схлопнуты в недели
-  const cap=p.cap;
-  const meta=[s.sex,s.age?s.age+" лет":null,s.goal?("цель: "+String(s.goal).toLowerCase()):null].filter(Boolean).join(" · ");
-  // среднее по ряду; в недельном режиме это среднее недельных средних
-  const avgOf=(k)=>{const v=s.series.map(x=>x[k]).filter(x=>x!=null&&x>0);
-    return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):0;};
-
-  // статус-пилюли
-  const pills=[];
-  const last=s.last_activity||null;
-  const silent=last?Math.round((Date.now()-new Date(last+"T00:00:00"))/86400000):null;
-  if(!last)pills.push(`<span class="pill crit">🚨 ещё не начал</span>`);
-  else if(silent>=2)pills.push(`<span class="pill crit">🚨 молчит ${silent} дн.</span>`);
-  if(st.avg_chek!=null&&st.avg_chek<5)pills.push(`<span class="pill warn">⚠️ качество еды низкое</span>`);
-  if(tg.kcal&&st.avg_kcal&&st.avg_kcal<0.7*tg.kcal)pills.push(`<span class="pill warn">⚠️ ест ниже нормы</span>`);
-  if(!pills.length)pills.push(`<span class="pill ok">✅ в порядке</span>`);
-
-  // плитки — за выбранный период
-  const kcalVal=isDay?t.kcal:st.avg_kcal;
-  const protVal=isDay?t.protein:avgOf("protein");
-  const waterVal=isDay?t.water:avgOf("water");
-  const kcalCls=tg.kcal&&kcalVal&&(kcalVal<0.7*tg.kcal||kcalVal>1.15*tg.kcal)?"warn":"";
-  const protCls=tg.protein&&protVal<0.6*tg.protein?"crit":"";
-  const chekCls=st.avg_chek!=null&&st.avg_chek<5?"warn":"";
-  const tiles=[
-    tile(kcalCls,isDay?"🔥 Ккал сегодня":`🔥 Ккал ср. ${cap}`,
-      `${fmt(kcalVal)}${tg.kcal?` <small>/ ${fmt(tg.kcal)}</small>`:""}`,
-      tg.kcal?(isDay?"":`сегодня ${fmt(t.kcal)}`):"норма не задана"),
-    tile(protCls,isDay?"💪 Белок сегодня":`💪 Белок ср. ${cap}`,
-      `${fmt(protVal)}${tg.protein?` <small>/ ${tg.protein} г</small>`:" г"}`,protCls?"ниже цели":""),
-    tile(chekCls,`🍽 Чек ${cap}`,st.avg_chek!=null?`${rub(st.avg_chek)}<small>/10</small>`:"—","качество еды"),
-    tile("",isDay?"💧 Вода сегодня":`💧 Вода ср. ${cap}`,
-      `${fmt(waterVal)} <small>/ ${fmt(tg.water)}</small>`,waterVal>=tg.water?"норма":"мл, ниже нормы"),
-  ];
-  if(s.oura&&s.oura.latest){
-    const o=s.oura.latest,a=s.oura.avg||{};
-    const rd=isDay?o.readiness:a.readiness,sl=isDay?o.sleep_h:a.sleep_h,hv=isDay?o.hrv:a.hrv;
-    tiles.push(tile(rd!=null&&rd<70?"warn":"",isDay?"💍 Готовность":"💍 Готовность ср.",
-      `${rd??"—"}`,isDay?"с кольца":cap));
-    tiles.push(tile("",isDay?"😴 Сон":"😴 Сон ср.",sl!=null?`${rub(sl)}<small> ч</small>`:"—",
-      hv!=null?`HRV ${rub(hv)}`:"с кольца"));
-  }else{
-    tiles.push(emptyTile("💍 Готовность","Данных нет"));
-    tiles.push(emptyTile("😴 Сон","кольцо не подключено"));
-  }
-
-  // динамика: за один день спарклайны бессмысленны — точечные значения и чек-лист
-  let dynHtml,dynCap;
-  if(isDay){
-    dynCap="Точечные значения и чек-лист на сегодня";
-    const wk=t.workout==="done"?"✅ выполнена":(t.workout==="skipped"?"⏭ пропущена":"—");
-    const sup=s.supplements?`${s.supplements.taken} / ${s.supplements.total}`:"—";
-    dynHtml=`<div class="pt">
-      <div class="p"><div class="k">Приёмов пищи</div><div class="v">${fmt(t.meals)}</div></div>
-      <div class="p"><div class="k">Калории</div><div class="v">${fmt(t.kcal)}${tg.kcal?` <small>/ ${fmt(tg.kcal)}</small>`:""}</div></div>
-      <div class="p"><div class="k">Чек</div><div class="v">${t.chek!=null?rub(t.chek):"—"}<small>/10</small></div></div>
-      <div class="p"><div class="k">Вода</div><div class="v">${fmt(t.water)} <small>/ ${fmt(tg.water)}</small></div></div>
-      <div class="p"><div class="k">Тренировка</div><div class="v">${wk}</div></div>
-      <div class="p"><div class="k">Working In</div><div class="v">${t.wi?"✅":"—"}</div></div>
-      <div class="p"><div class="k">БАДы</div><div class="v">${sup}</div></div>
-    </div>`;
-  }else{
-    dynCap=byWeek?"Среднее по неделям — на длинном окне дневные точки не читаются":"Динамика по дням";
-    const kmax=niceMax(Math.max(tg.kcal||0,...s.series.map(x=>x.kcal||0))*1.05);
-    const wmax=niceMax(Math.max(tg.water||0,...s.series.map(x=>x.water||0))*1.05);
-    const oAvg=(s.oura&&s.oura.avg)?s.oura.avg.readiness:null;
-    dynHtml=`<div class="charts">
-      <div class="chart"><div class="ct">Калории</div><div class="cv">${fmt(st.avg_kcal)}</div>${barsSvg(s.series.map(x=>x.kcal||0),kmax,tg.kcal,'--s3')}</div>
-      <div class="chart"><div class="ct">Чек</div><div class="cv">${st.avg_chek!=null?rub(st.avg_chek):"—"}</div>${lineSvg(s.series.map(x=>x.chek),10,'--brand')}</div>
-      <div class="chart"><div class="ct">Вода</div><div class="cv">${fmt(avgOf("water"))}</div>${barsSvg(s.series.map(x=>x.water||0),wmax,tg.water,'--s1')}</div>
-      ${s.oura&&s.oura.series?`<div class="chart"><div class="ct">Готовность</div><div class="cv">${oAvg??"—"}</div>${lineSvg(s.oura.series.map(x=>x.readiness??null),100,'--warn')}</div>`
-        :`<div class="chart"><div class="ct">Сон и готовность</div><div class="nodata" style="margin-top:6px;padding:10px">💍 Кольцо не подключено</div></div>`}
-    </div>`;
-  }
-
-  // самочувствие
-  let wbHtml;
-  if(s.wellbeing){const a=s.wellbeing.avg;
-    const row=(lbl,v,col)=>v==null?"":`<div class="wb-row"><span>${lbl}</span><span class="bar"><i style="width:${v*10}%;background:${col}"></i></span><span class="n">${rub(v)}</span></div>`;
-    wbHtml=`<div class="wb">${row("⚡️ Энергия",a.energy,cssv('--warn'))}${row("🙂 Настроение",a.mood,cssv('--s1'))}${row("😤 Стресс",a.stress,cssv('--crit'))}${row("❤️ Либидо",a.libido,cssv('--warn'))}</div>`;
-    if(s.wellbeing.latest&&s.wellbeing.latest.note)wbHtml+=`<p class="cap" style="margin-top:10px">Заметка: «${esc(s.wellbeing.latest.note)}»</p>`;
-  }else wbHtml=`<div class="nodata">Данных нет — клиент не отмечал самочувствие</div>`;
-
-  // браслет WHOOP: показываем рядом с кольцом, если подключён
-  let whoopHtml="",whoopCard="";
-  if(s.whoop){
-    const a=s.whoop.avg||{},L=s.whoop.latest||{};
-    const val=(v,u,d)=>v==null?null:`${d?rub(v):fmt(Math.round(v))}${u||""}`;
-    const group=(title,rows)=>{const got=rows.filter(r=>r[1]!=null);
-      return `<div><div class="k">${title}</div>${got.length?got.map(r=>`<div class="orow"><span>${r[0]}</span><b>${r[1]}</b></div>`).join("")
-        :`<div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div>`}</div>`;};
-    whoopHtml=`<div class="ogrid">
-      ${group("💚 Восстановление",[["Recovery",val(a.recovery,"%")],["HRV",val(a.hrv," мс",1)],
-        ["Пульс покоя",val(a.resting_hr," уд/мин",1)],["SpO₂",val(a.spo2,"%",1)],
-        ["Температура кожи",a.skin_temp==null?null:`${rub(a.skin_temp)} °C`]])}
-      ${group("😴 Сон",[["Длительность",val(a.sleep_h," ч",1)],["Качество",val(a.sleep_perf,"%")],
-        ["Глубокий",val(a.deep_h," ч",1)],["REM",val(a.rem_h," ч",1)],
-        ["Дыхание",val(a.breath_avg,"/мин",1)]])}
-      ${group("🔥 Нагрузка",[["Strain",val(a.strain,"",1)],["Расход за сутки",val(a.day_kcal," ккал")],
-        ["Пульс средний",val(a.avg_hr," уд/мин")],["Пульс макс.",val(a.max_hr," уд/мин")]])}
-    </div>`;
-    const ww=s.whoop.workouts||[];
-    whoopHtml+=ww.length?`<div class="k" style="margin-top:12px">🏃 Тренировки с браслета</div>
-      <div class="supp">${ww.map(w=>{
-        const day=new Date(w.day+"T00:00:00").toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"});
-        return `<div class="supp-row"><span class="box on">✓</span>
-          <span>${day} · ${esc(w.sport||"тренировка")}${w.calories?` · ${fmt(w.calories)} ккал`:""}${w.strain?` · strain ${rub(w.strain)}`:""}</span></div>`;
-      }).join("")}</div>`
-      :`<div class="k" style="margin-top:12px">🏃 Тренировки с браслета</div>
-        <div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div>`;
-    whoopCard=`<div class="card"><h3>⌚ Браслет WHOOP <span class="src">ср. ${cap}</span></h3>
-      <p class="cap">Восстановление, сон и нагрузка ${cap}</p>${whoopHtml}</div>`;
-  }
-
-  // кольцо Oura: показываем всё, что удалось собрать; пустое — «Данных нет»
-  let ouraHtml,ouraHead="";
-  if(s.oura){
-    const a=s.oura.avg||{},L=s.oura.latest||{};
-    const val=(v,unit,dec)=>v==null?null:`${dec?rub(v):fmt(Math.round(v))}${unit||""}`;
-    const group=(title,rows)=>{
-      const got=rows.filter(r=>r[1]!=null);
-      if(!got.length)return `<div><div class="k">${title}</div><div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div></div>`;
-      return `<div><div class="k">${title}</div>${got.map(r=>
-        `<div class="orow"><span>${r[0]}</span><b>${r[1]}</b></div>`).join("")}</div>`;
-    };
-    ouraHead=`<span class="src">ср. ${cap}</span>`;
-    ouraHtml=`<div class="ogrid">
-      ${group("😴 Сон",[
-        ["Длительность",val(a.sleep_h," ч",1)],["Эффективность",val(a.sleep_efficiency,"%")],
-        ["Глубокий",val(a.deep_h," ч",1)],["REM",val(a.rem_h," ч",1)],["Лёгкий",val(a.light_h," ч",1)],
-        ["Оценка сна",val(a.sleep_score,"")]])}
-      ${group("❤️ Показатели",[
-        ["HRV",val(a.hrv," мс")],["Пульс покоя",val(a.resting_hr," уд/мин")],
-        ["Дыхание",val(a.breath_avg,"/мин",1)],["SpO₂",val(a.spo2_avg,"%",1)],
-        ["Температура",a.temp_dev==null?null:`${rub(a.temp_dev)} °C`]])}
-      ${group("🏃 Активность",[
-        ["Готовность",val(a.readiness,"")],["Оценка активности",val(a.activity_score,"")],
-        ["Шаги",val(a.steps,"")],["Активные ккал",val(a.active_kcal,"")],
-        ["Всего ккал",val(a.total_kcal,"")],
-        ["Дистанция",a.distance_m==null?null:`${rub(Math.round(a.distance_m/100)/10)} км`],
-        ["Минут активности",val(a.active_min,"")]])}
-      ${group("🧠 Стресс и форма",[
-        ["Стресс, высокий",val(a.stress_high_min," мин")],
-        ["Итог дня",L.stress_summary?esc(L.stress_summary):null],
-        ["Устойчивость",L.resilience?esc(L.resilience):null],
-        ["VO₂max",val(a.vo2_max,"",1)],["Кардио-возраст",val(a.cardio_age," лет")]])}
-    </div>`;
-    const ow=s.oura.workouts||[];
-    ouraHtml+=ow.length?`<div class="k" style="margin-top:12px">🏃 Тренировки с кольца</div>
-      <div class="supp">${ow.map(w=>{
-        const day=new Date(w.day+"T00:00:00").toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"});
-        const kc=w.calories?` · ${fmt(w.calories)} ккал`:"";
-        const di=w.distance?` · ${rub(Math.round(w.distance/100)/10)} км`:"";
-        return `<div class="supp-row"><span class="box on">✓</span>
-          <span>${day} · ${esc(w.activity||"тренировка")}${kc}${di}</span>
-          ${w.intensity?`<span class="tm">${esc(w.intensity)}</span>`:""}</div>`;
-      }).join("")}</div>`
-      :`<div class="k" style="margin-top:12px">🏃 Тренировки с кольца</div>
-        <div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div>`;
-  }else ouraHtml=`<div class="nodata">Данных нет — кольцо не подключено</div>`;
-
-  // тренировки: клиент фиксирует их сам — показываем как есть
-  let woHtml,woHead="";
-  const wo=s.workouts;
-  if(wo&&wo.list.length){
-    const h=Math.floor(wo.minutes/60),mm=wo.minutes%60;
-    woHead=`<span class="src">${wo.done} ${plural(wo.done,"тренировка","тренировки","тренировок")}`
-      +(wo.minutes?` · ${h?h+" ч ":""}${mm?mm+" мин":""}`:"")
-      +(wo.kcal_burned?` · ${fmt(wo.kcal_burned)} ккал расход`:"")+`</span>`;
-    woHtml=`<div class="supp">${wo.list.map(w=>{
-      const done=w.status==="done";
-      const dur=w.duration_min?` · ${w.duration_min} мин`:"";
-      // расход держим отдельно от съеденного и помечаем, откуда число
-      const kc=w.kcal_burned
-        ? ` · <b title="${w.kcal_source==="oura"?"с кольца Oura":"оценка по весу и времени"}">`
-          +`${w.kcal_source==="oura"?"":"≈"}${fmt(w.kcal_burned)} ккал</b>`
-          +`<span class="tm" style="margin:0 0 0 4px">${w.kcal_source==="oura"?"Oura":"оценка"}</span>`
-        : "";
-      const day=new Date(w.date+"T00:00:00").toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"});
-      return `<div class="supp-row">
-        <span class="box ${done?'on':'off'}">${done?'✓':'—'}</span>
-        <span>${day}${done&&w.time?" · "+esc(w.time):""}${dur}${kc}${w.description?" · "+esc(w.description):""}</span>
-        ${done?"":'<span class="tm">не тренировался</span>'}</div>`;
-    }).join("")}</div>`;
-  }else woHtml=`<div class="nodata">Данных нет — клиент не записывал тренировки ${cap}</div>`;
-
-  // что ел: дневник по дням, приём раскрывается в состав и вердикт
-  let foodHtml,foodHead="";
-  const fd=s.food;
-  if(fd&&fd.days&&fd.days.length){
-    foodHead=`<span class="src">${fd.total} ${plural(fd.total,"запись","записи","записей")}</span>`;
-    foodHtml=`<div class="food">${fd.days.map((d,i)=>`
-      <details${i<3?" open":""}>
-        <summary>${d.label}
-          <span class="dsum">${d.meals.length} ${plural(d.meals.length,"приём","приёма","приёмов")} · ${fmt(d.kcal)} ккал</span>
-          ${d.chek!=null?`<span class="sc ${scoreCls(d.chek)}">Чек ${rub(d.chek)}</span>`:""}</summary>
-        ${d.meals.map(m=>`<details class="meal"><summary>
-            <span class="tm">${esc(m.time||"")}</span>
-            <span class="nm">${esc(m.dish||"Приём пищи")}</span>
-            <span class="kc">${fmt(Math.round(m.kcal||0))} ккал</span>
-            ${m.chek_score!=null?`<span class="sc ${scoreCls(m.chek_score)}">${m.chek_score}</span>`:""}
-          </summary>
-          <div class="body">
-            <div class="macro">
-              <span>Б ${fmt(Math.round(m.protein||0))} г</span>
-              <span>Ж ${fmt(Math.round(m.fat||0))} г</span>
-              <span>У ${fmt(Math.round(m.carbs||0))} г</span>
-              ${m.grams?`<span>${fmt(Math.round(m.grams))} г всего</span>`:""}
-              <span>${m.source==="photo"?"📷 по фото":"✍️ текстом"}</span>
-              ${m.confidence?`<span>точность: ${esc(m.confidence)}</span>`:""}
-            </div>
-            ${m.items&&m.items.length?`<ul class="items">${m.items.map(it=>
-              `<li>${esc(it.name)} — ${fmt(Math.round(it.grams||0))} г, ${fmt(Math.round(it.kcal||0))} ккал</li>`).join("")}</ul>`:""}
-            ${m.verdict?`<div class="verdict">${esc(m.verdict)}</div>`:""}
-            ${m.tip?`<div class="tip">💡 ${esc(m.tip)}</div>`:""}
-            ${m.assumptions?`<div class="assum">Допущения ИИ: ${esc(m.assumptions)}</div>`:""}
-          </div></details>`).join("")}
-      </details>`).join("")}
-      ${fd.truncated?`<p class="cap" style="margin:2px 0 0">Показаны последние ${fd.shown} из ${fd.total} записей за период</p>`:""}
-    </div>`;
-  }else foodHtml=`<div class="nodata">Данных нет — клиент не присылал еду ${cap}</div>`;
-
-  // БАДы: план приёма против факта за период
-  let supHtml,supHead="",supCap;
-  if(s.supplements){
-    const sp=s.supplements,wd=sp.window_days||1;
-    supHead=isDay?`<span class="src">${sp.taken}/${sp.total}</span>`
-                 :`<span class="src">${sp.taken_total} из ${sp.planned_total}</span>`;
-    supCap=isDay?"Приём за сегодня"
-                :`Выполнение плана ${cap} · сегодня ${sp.taken}/${sp.total}`;
-    if(isDay){
-      supHtml=`<div class="supp">${sp.list.map(x=>
-        `<div class="supp-row"><span class="box ${x.today_taken?'on':'off'}">${x.today_taken?'✓':''}</span> ${esc(x.name)}
-         <span class="tm">${esc(x.timing||'')}${x.timing?' · ':''}${planLabel(x.plan_days_per_week)}</span></div>`).join("")}</div>`;
-    }else{
-      supHtml=`<div class="adh">${sp.list.map(x=>{
-        const pct=x.planned>0?Math.min(100,Math.round(x.taken/x.planned*100)):(x.taken>0?100:0);
-        const col=x.planned>0&&x.taken>=x.planned?cssv('--ok'):(pct>=60?cssv('--warn'):cssv('--crit'));
-        const extra=wd<=42?adhDots(x,wd):(wd<=120?adhWeeks(x,wd):"");
-        return `<div class="adh-row"><div class="top">
-            <span class="nm">${esc(x.name)}</span>
-            <span class="plan">${esc(x.timing||'')}${x.timing?' · ':''}${planLabel(x.plan_days_per_week)}</span>
-            <span class="cnt">${x.taken} из ${x.planned}</span></div>
-          <span class="bar"><i style="width:${pct}%;background:${col}"></i></span>${extra}</div>`;
-      }).join("")}</div>`;
-    }
-  }else{
-    supHtml=`<div class="nodata">Данных нет — клиент не ведёт БАДы</div>`;
-    supCap=isDay?"Приём за сегодня":`Выполнение плана ${cap}`;
-  }
-
-  // анализы
-  let labHtml,labCap;
-  if(s.labs){
-    const rows=s.labs.markers.map(m=>{
-      const val=m.value_text||(m.value!=null?rub(m.value):"?");
-      const ref=(m.ref_low!=null||m.ref_high!=null)?`${m.ref_low!=null?rub(m.ref_low):""}–${m.ref_high!=null?rub(m.ref_high):""}`:"—";
-      const fl=m.flag==="низко"?`<span class="flag lo">🔽 низко</span>`:m.flag==="высоко"?`<span class="flag hi">🔼 высоко</span>`:`<span class="flag ok">✅ норма</span>`;
-      let tr='<span class="trend n">—</span>';
-      if(m.prev!=null&&m.value!=null){const diff=m.value-m.prev;const cls=diff===0?"n":((diff>0)===(m.flag==="высоко")?"b":"g");
-        tr=`<span class="trend ${cls}">${diff>0?"↑":(diff<0?"↓":"=")} было ${rub(m.prev)}</span>`;}
-      return `<tr><td>${esc(m.name)}</td><td class="num">${val} ${esc(m.unit||"")}</td><td>${ref}</td><td>${fl}</td><td class="num">${tr}</td></tr>`;
-    }).join("");
-    labHtml=`<div class="lab" style="overflow-x:auto"><table><thead><tr><th>Показатель</th><th class="num">Значение</th><th>Норма</th><th>Статус</th><th class="num">Δ к прошлому</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    // бланк старше выбранного периода — показываем, но честно помечаем
-    const stale=s.labs.in_window===false;
-    labCap=stale?`Последний бланк от ${s.labs.last_date} — он старше выбранного периода`
-                :`Бланки ${cap} · динамика к предыдущему значению`;
-    if(stale)labHtml=`<div class="stale">🗓 За период «${p.btn.toLowerCase()}» новых анализов не было — показываю последний, от ${s.labs.last_date}</div>`+labHtml;
-  }else{
-    labHtml=`<div class="nodata">Данных нет — анализы не загружены (клиент присылает боту фото или PDF бланка)</div>`;
-    labCap="Показатели и динамика";
-  }
-
-  $("detail").innerHTML=`
-    <div class="chead"><h2>${esc(s.name||"Клиент")}</h2>${pills.join("")}</div>
-    <p class="sub">${esc(meta)||"профиль не заполнен"}${s.last_activity_label?` · последняя запись ${s.last_activity_label}`:""}</p>
-    ${segHtml()}
-    <div class="tiles">${tiles.join("")}</div>
-    <div class="card"><h3>${isDay?"Сегодня":"Динамика "+cap} <span class="src">${s.oura?'Oura + бот':'бот'}</span></h3>
-      <p class="cap">${dynCap}</p>${dynHtml}</div>
-    ${(s.trainer_notes&&s.trainer_notes.length)?`<div class="card"><h3>🔔 Ассистент подсветил
-      <span class="src">${s.trainer_notes.length}</span></h3>
-      <p class="cap">Вопросы и жалобы клиента, которые стоит обсудить</p>
-      <div class="supp">${s.trainer_notes.map(n=>`<div class="supp-row">
-        <span class="box on">!</span><span>${esc(n.text)}</span>
-        <span class="tm">${esc(n.date)}</span></div>`).join("")}</div></div>`:""}
-    ${whoopCard}
-    <div class="card"><h3>💍 Кольцо Oura ${ouraHead}</h3>
-      <p class="cap">Сон, активность и показатели ${cap}</p>${ouraHtml}</div>
-    <div class="card"><h3>🏋️ Тренировки ${woHead}</h3>
-      <p class="cap">Что клиент записал сам: время, длительность, что делал</p>${woHtml}</div>
-    <div class="card"><h3>🍽 Что ел ${foodHead}</h3>
-      <p class="cap">По дням, свежие сверху · нажми на приём — раскроется состав и вердикт по Чеку</p>${foodHtml}</div>
-    <div class="grid2">
-      <div class="card"><h3>Самочувствие <span class="src">дневник</span></h3><p class="cap">${isDay?"За сегодня":"Средние "+cap}</p>${wbHtml}</div>
-      <div class="card"><h3>БАДы ${supHead}</h3><p class="cap">${supCap}</p>${supHtml}</div>
-    </div>
-    <div class="card"><h3>Анализы ${s.labs?`<span class="src">${s.labs.dates.length} загр. · ${s.labs.last_date}</span>`:''}</h3><p class="cap">${labCap}</p>${labHtml}</div>
-    <div class="brief">
-      <div class="top">🧠 <b>AI-бриф недели</b></div>
-      <p class="cap">Соберёт всё выше в сводку и черновик сообщения клиенту (30–60 сек)</p>
-      <div class="rowbtns"><button class="btn primary" id="briefbtn">🧠 Собрать бриф</button></div>
-      <div id="briefbox"></div>
-    </div>`;
-  $("briefbtn").addEventListener("click",()=>makeBrief(uid));
-  wireSeg();
-}
-
-async function makeBrief(uid){
-  const btn=$("briefbtn"),box=$("briefbox");
-  btn.disabled=true;btn.textContent="🧠 Думаю…";
-  try{
-    const data=await (await fetch(`/coach/api/brief?uid=${uid}`,{method:"POST"})).json();
-    if(data.brief){
-      box.innerHTML=`<pre>${esc(data.brief)}</pre><div class="rowbtns"><button class="btn" id="copybtn">📋 Скопировать</button></div>`;
-      $("copybtn").addEventListener("click",async()=>{try{await navigator.clipboard.writeText(data.brief);$("copybtn").textContent="✅ Скопировано";}catch(e){$("copybtn").textContent="выдели вручную";}});
-    }else box.innerHTML=`<pre>⚠️ ${esc(data.error||"не получилось")}</pre>`;
-  }catch(e){box.innerHTML=`<pre>⚠️ Ошибка сети — попробуй ещё раз</pre>`;}
-  btn.disabled=false;btn.textContent="🧠 Собрать бриф";
-}
-
-$("back").addEventListener("click",()=>{$("detailView").hidden=true;$("listView").hidden=false;loadList();});
-$("refresh").addEventListener("click",loadList);
-loadMe();loadList();
+$("back").addEventListener("click",()=>{ $("detailView").hidden=true; $("listView").hidden=false; loadList(); });
+$("p7").addEventListener("click",()=>{state.days=7;renderDetail();});
+$("p30").addEventListener("click",()=>{state.days=30;renderDetail();});
+loadList();
 </script>
 </body>
 </html>

@@ -581,14 +581,12 @@ async def _me_index(request: web.Request) -> web.StreamResponse:
 
 
 async def _me_api_summary(request: web.Request) -> web.Response:
-    """Тот же срез, что видит тренер, но строго по владельцу токена."""
+    """Данные строго владельца токена, в форме, которую ждёт client.html."""
+    import cabinet
+
     me = request["me"]
     days = resolve_days(me["user_id"], request.query.get("days"))
-    data = client_detail(me["user_id"], days)
-    coach = db.coach_by_id(me["coach_id"]) if me.get("coach_id") else None
-    data["brand"] = (coach or {}).get("brand") or ""
-    data["coach_name"] = (coach or {}).get("name") or ""
-    return web.json_response(data)
+    return web.json_response(cabinet.payload(me["user_id"], days))
 
 
 async def _me_api_brief(request: web.Request) -> web.Response:
@@ -620,19 +618,33 @@ async def _coach_api_me(request: web.Request) -> web.Response:
 
 
 async def _coach_api_clients(request: web.Request) -> web.Response:
+    import cabinet
+
     coach = request["coach"]
     rows = [client_overview(u["user_id"]) for u in db.clients_of_coach(coach["id"])]
     order = {"red": 0, "yellow": 1, "green": 2}
     rows.sort(key=lambda r: order.get(r["flags"][0]["level"], 3))
-    return web.json_response({"clients": rows, "generated_at": datetime.now().strftime("%H:%M")})
+    clients = [{
+        "uid": r["uid"], "name": r["name"],
+        "flags": [{"level": cabinet.FLAG_LEVEL.get(f["level"], "ok"), "text": f["text"]}
+                  for f in r["flags"]],
+        "days_logged": r["days_logged"], "kcal_today": r["kcal_today"],
+        "kcal_target": r["kcal_target"], "avg_chek": r["avg_chek"],
+        "water_today": r["water_today"], "water_target": r["water_target"],
+        "workouts_done": r["workouts_done"],
+    } for r in rows]
+    return web.json_response({"clients": clients,
+                              "generated_at": datetime.now().strftime("%H:%M")})
 
 
 async def _coach_api_client(request: web.Request) -> web.Response:
     uid = _client_uid_or_none(request)
     if uid is None:
         return web.json_response({"error": "клиент не найден"}, status=404)
+    import cabinet
+
     days = resolve_days(uid, request.query.get("days"))
-    return web.json_response(client_detail(uid, days))
+    return web.json_response(cabinet.coach_client_payload(uid, days))
 
 
 async def _coach_api_brief(request: web.Request) -> web.Response:

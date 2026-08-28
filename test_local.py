@@ -609,7 +609,8 @@ async def _coach_http(cabinet_token: str):
                     eq(r.status, 200, f"карточка за период {period} — 200")
                     payload = await r.json()
                     ok(payload.get("ok"), f"payload за период {period} собран")
-                    ok(payload.get("days", 0) >= 1, f"период {period}: days в ответе")
+                    ok(len(payload.get("series") or []) >= 1,
+                       f"период {period}: ряд дней непустой")
             async with s.get(f"{base}/coach/api/client?key={cabinet_token}&uid=999999") as r:
                 ok(r.status in (400, 403, 404), "чужой клиент не отдаётся")
             async with s.get(f"{base}/") as r:
@@ -2527,6 +2528,168 @@ def test_whoop_agent_and_cabinet():
     ok("восстановление" in txt, "и названы человеческими словами")
 
 
+def _seed_cabinet_client(uid: int, name: str, coach_id: int) -> None:
+    """Клиент со всеми разделами — чтобы проверить контракт целиком."""
+    db.ensure_user(uid, name, coach_id=coach_id)
+    db.update_user(uid, consent=1, sex="Женщина", age=34, goal="Похудеть",
+                   kcal_target=2400, protein_target=110, fat_target=70, carb_target=250)
+    db.add_meal(uid, TODAY, "09:00", "text", "Овсянка", 300, 400, 12, 10, 60, 8, "ок")
+    db.add_water(uid, TODAY, "09:10", 500)
+    db.add_workout_log(uid, day(1), "18:30", "done", note="t", duration_min=40,
+                       description="турник + брусья", kcal_burned=310, kcal_source="oura")
+    db.set_wellbeing(uid, TODAY, energy=5, mood=6, stress=7,
+                     note="Сплю плохо, много стресса")
+    sid = db.add_supplement(uid, "Витамин D 5000", "утром")
+    db.toggle_supplement_taken(uid, TODAY, sid)
+    db.add_lab_result(uid, day(18), "Биохимия", [
+        {"name": "Ферритин", "value": 24.0, "unit": "нг/мл",
+         "ref_low": 30, "ref_high": 150, "flag": "низко"}])
+    db.add_lab_result(uid, day(4), "Биохимия", [
+        {"name": "Ферритин", "value": 18.0, "unit": "нг/мл",
+         "ref_low": 30, "ref_high": 150, "flag": "низко"}])
+    db.add_weight(uid, day(29), 83.0)
+    db.add_weight(uid, TODAY, 82.4)
+    db.save_oura_tokens(uid, "a", "r", 9_000_000_000.0)
+    db.upsert_oura_daily(uid, TODAY, readiness=64, sleep_h=6.2, hrv=48, resting_hr=58)
+    db.add_trainer_note(uid, day(1), "Спросила про кофе после 18:00 — переадресовал тебе.")
+
+
+CAB_UID = 7060
+
+
+def test_cabinet_contract():
+    """Форма ответа должна совпадать с MOCK внутри client.html."""
+    import cabinet
+
+    coach_id = db.list_coaches()[0]["id"]
+    _seed_cabinet_client(CAB_UID, "Марина", coach_id)
+    p = cabinet.payload(CAB_UID, 30)
+
+    for key in ("me", "today", "targets", "stats", "series", "gadgets"):
+        ok(key in p, f"обязательный раздел «{key}» на месте")
+    eq(sorted(p["me"]), ["brand", "coach", "name"], "me по контракту")
+    eq(sorted(p["today"]), ["carbs", "fat", "kcal", "protein", "water"], "today по контракту")
+    eq(sorted(p["targets"]), ["carbs", "fat", "kcal", "protein", "water"], "targets по контракту")
+    ok("avg_chek" in p["stats"], "stats.avg_chek на месте")
+
+    eq(len(p["series"]), 30, "в series ровно 30 дней")
+    row = p["series"][-1]
+    eq(sorted(row), ["chek", "date", "kcal", "label", "readiness", "sleep_h",
+                     "water", "weight", "workout"], "день series по контракту")
+    ok(row["label"] in cabinet.WEEKDAY_RU, "день недели по-русски")
+    ok(p["series"][-2]["workout"] in ("done", "skip", "none"), "статус тренировки из словаря")
+    eq(p["series"][-1]["readiness"], 64, "готовность из кольца попала в ряд")
+    eq(p["series"][-1]["weight"], 82.4, "вес попал в ряд")
+
+    eq(sorted(p["gadgets"]), ["oura", "primary", "whoop"], "gadgets по контракту")
+    eq(p["gadgets"]["primary"], "oura", "главный гаджет — подключённое кольцо")
+    eq(p["gadgets"]["oura"]["connected"], True, "кольцо отмечено подключённым")
+    eq(p["gadgets"]["whoop"]["connected"], False, "браслета нет")
+
+    eq(sorted(p["wellbeing"]), ["avg", "latest"], "wellbeing по контракту")
+    ok(p["wellbeing"]["latest"]["note"], "заметка самочувствия отдаётся")
+
+    s = p["supplements"][0]
+    eq(sorted(s), ["dots", "name", "plan", "timing"], "БАД по контракту")
+    eq(len(s["dots"]), 7, "семь точек — приём за неделю")
+    ok(all(v in (0, 1) for v in s["dots"]), "точки это 0/1")
+
+    m = p["labs"]["markers"][0]
+    eq(sorted(m), ["flag", "name", "ref", "trend", "value"], "маркер по контракту")
+    eq(m["value"], "18 нг/мл", "значение — готовая строка")
+    eq(m["ref"], "30–150", "норма — готовая строка")
+    eq(m["trend"], "↓ было 24", "динамика — готовая строка по-русски")
+    ok(isinstance(p["labs"]["total"], int), "total числом")
+
+    w = p["workouts"]["last"]
+    eq(sorted(w), ["desc", "dur", "kcal", "src", "when"], "последняя тренировка по контракту")
+    eq(w["when"], "вчера", "дата словом")
+    eq(w["src"], "Oura", "источник расхода читаемый")
+    ok(isinstance(p["workouts"]["month_done"], int), "счётчик тренировок числом")
+
+    eq(sorted(p["weight"]), ["current", "delta30"], "вес по контракту")
+    eq(p["weight"]["current"], 82.4, "текущий вес")
+    eq(p["weight"]["delta30"], -0.6, "изменение за месяц")
+
+
+def test_cabinet_empty_sections():
+    uid = 7061
+    db.ensure_user(uid, "Пустой")
+    p = __import__("cabinet").payload(uid, 30)
+    for key in ("labs", "supplements", "wellbeing", "workouts"):
+        ok(key not in p, f"пустой раздел «{key}» в JSON не попадает")
+    for key in ("me", "today", "targets", "stats", "series", "gadgets"):
+        ok(key in p, f"обязательный «{key}» есть даже у пустого клиента")
+    eq(p["gadgets"]["oura"]["connected"], False, "гаджеты помечены неподключёнными")
+
+
+def test_coach_client_payload():
+    import cabinet
+
+    p = cabinet.coach_client_payload(CAB_UID, 30)
+    for key in ("name", "meta", "flags", "notes"):
+        ok(key in p, f"тренерское поле «{key}» на месте")
+    eq(sorted(p["meta"]), ["age", "goal", "sex"], "meta по контракту")
+    ok(p["flags"], "светофор непустой")
+    ok(all(f["level"] in ("ok", "warn", "crit") for f in p["flags"]),
+       "уровни строго ok/warn/crit")
+    eq(sorted(p["notes"][0]), ["date", "text"], "заметка по контракту")
+    ok(len(p["notes"]) <= 10, "не больше десяти заметок")
+    ok("series" in p, "и весь клиентский контракт тоже")
+
+
+async def _cabinet_http(cab_token: str, coach_token: str, foreign_uid: int):
+    config.DASHBOARD_TOKEN = "owner-test-key"
+    port = free_port()
+    runner = await web_dashboard.start_dashboard(port, host="127.0.0.1")
+    base = f"http://127.0.0.1:{port}"
+    out = {}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{base}/me/api/summary?days=30") as r:
+                out["me_no_key"] = r.status
+            async with s.get(f"{base}/me/api/summary?days=30&key={cab_token}") as r:
+                out["me_ok"] = r.status
+                out["me_body"] = await r.json()
+            async with s.get(f"{base}/coach/api/clients?key={coach_token}") as r:
+                out["clients"] = await r.json()
+            async with s.get(f"{base}/coach/api/client?key={coach_token}&uid={CAB_UID}") as r:
+                out["client_ok"] = r.status
+            async with s.get(f"{base}/coach/api/client?key={coach_token}&uid={foreign_uid}") as r:
+                out["client_foreign"] = r.status
+            async with s.get(f"{base}/me?key={cab_token}") as r:
+                out["page"] = await r.text()
+            async with s.get(f"{base}/coach?key={coach_token}") as r:
+                out["coach_page"] = await r.text()
+    finally:
+        await runner.cleanup()
+    return out
+
+
+def test_cabinet_http_contract():
+    coach = db.list_coaches()[0]
+    res = asyncio.run(_cabinet_http(db.cabinet_token_for(CAB_UID),
+                                    coach["cabinet_token"], AGENT_UID))
+    eq(res["me_no_key"], 401, "без ключа личная страничка не отдаёт данные")
+    eq(res["me_ok"], 200, "со своим ключом отдаёт")
+    ok("series" in res["me_body"], "и это контракт вёрстки")
+
+    cl = res["clients"]["clients"]
+    ok(cl, "список клиентов непустой")
+    eq(sorted(cl[0]), ["avg_chek", "days_logged", "flags", "kcal_target", "kcal_today",
+                       "name", "uid", "water_target", "water_today", "workouts_done"],
+       "строка клиента по контракту")
+    ok(all(f["level"] in ("ok", "warn", "crit") for c in cl for f in c["flags"]),
+       "светофор в списке — ok/warn/crit")
+
+    eq(res["client_ok"], 200, "карточка своего клиента открывается")
+    eq(res["client_foreign"], 404, "чужой uid — 404")
+
+    ok("MOCK" in res["page"], "по /me отдаётся новая вёрстка клиента")
+    ok("/me/api/summary" in res["page"], "она ходит в клиентский API")
+    ok("/coach/api/clients" in res["coach_page"], "по /coach отдаётся новая вёрстка тренера")
+
+
 def test_client_cabinet_token():
     uid = 7040
     db.ensure_user(uid, "Кабинет")
@@ -2564,15 +2727,15 @@ async def _me_http(cabinet_token: str):
 def test_client_cabinet_http():
     token = db.cabinet_token_for(CLIENT_UID)
     data = asyncio.run(_me_http(token))
-    eq(data["name"], db.get_user(CLIENT_UID)["name"], "видны данные владельца токена")
-    ok("food" in data and "workouts" in data, "та же карточка, что у тренера")
-    ok("brand" in data, "бренд тренера в шапке")
+    eq(data["me"]["name"], db.get_user(CLIENT_UID)["name"], "видны данные владельца токена")
+    ok("series" in data and "gadgets" in data, "ответ в контракте вёрстки")
+    ok("brand" in data["me"], "бренд тренера в шапке")
 
     # чужие данные по своему ключу не достать
     other = db.cabinet_token_for(AGENT_UID)
     ok(other != token, "ключи разные")
     data2 = asyncio.run(_me_http(other))
-    eq(data2["name"], db.get_user(AGENT_UID)["name"], "по другому ключу — другой клиент")
+    eq(data2["me"]["name"], db.get_user(AGENT_UID)["name"], "по другому ключу — другой клиент")
 
 
 def test_dashboard_link_tool():
@@ -2859,6 +3022,14 @@ def main() -> int:
     test_whoop_workout_matching()
     print("- WHOOP: ассистент и кабинет")
     test_whoop_agent_and_cabinet()
+    print("- кабинеты: контракт данных")
+    test_cabinet_contract()
+    print("- кабинеты: пустые разделы")
+    test_cabinet_empty_sections()
+    print("- кабинеты: карточка у тренера")
+    test_coach_client_payload()
+    print("- кабинеты: HTTP и раздача вёрстки")
+    test_cabinet_http_contract()
     print("- страница политики конфиденциальности")
     test_privacy_page()
     print("- кабинет клиента: ключи доступа")
