@@ -9,6 +9,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -1602,8 +1603,9 @@ def test_ai_tips_migration():
 
 
 def test_coach_still_gets_advice():
-    ok("ЧЕРНОВИК СООБЩЕНИЯ КЛИЕНТУ" in analyzer.BRIEF_SYSTEM,
-       "в брифе тренеру остался черновик сообщения клиенту")
+    ok("ЧЕРНОВИК" not in analyzer.BRIEF_SYSTEM,
+       "черновик сообщения клиенту убран — манера общения у тренера своя")
+    ok("СВЯЗЬ" in analyzer.BRIEF_SYSTEM, "блок связей остался")
     ok("НА ЧТО ОБРАТИТЬ ВНИМАНИЕ" in analyzer.BRIEF_SYSTEM,
        "в брифе тренеру остались пункты внимания")
     ok(not hasattr(analyzer, "generate_workout"),
@@ -1981,6 +1983,403 @@ def test_free_input_in_greeting():
        "свободный ввод стоит выше списка команд")
 
 
+# ------------------------------------------------- v2: разговорный ассистент
+
+AGENT_UID = 7030
+
+
+class _ToolUse:
+    def __init__(self, name, inp, tid="tool-1"):
+        self.type = "tool_use"
+        self.name = name
+        self.input = inp
+        self.id = tid
+
+
+class _Say:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _Resp:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeAgentClient:
+    """Отдаёт заранее заданный сценарий ходов. Ни одного запроса наружу."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+        self.messages = self
+
+    async def create(self, **kw):
+        self.calls.append(kw)
+        return self.script.pop(0) if self.script else _Resp([_Say("Готово 🙂")])
+
+
+def _run_agent(script, text, uid=AGENT_UID, coach=None, meal=None):
+    """Прогон агента с подменённым клиентом Claude и разбором еды."""
+    import agent as agent_mod
+
+    client = _FakeAgentClient(script)
+    saved = (analyzer._client, config.ACTIVE_PROVIDER, config.AGENT_MODE, analyzer.analyze_meal)
+    analyzer._client = lambda: client
+    config.ACTIVE_PROVIDER, config.AGENT_MODE = "anthropic", True
+    if meal is not None:
+        async def fake_meal(**kw):
+            return meal
+        analyzer.analyze_meal = fake_meal
+    try:
+        reply, _link = asyncio.run(agent_mod.handle_message(uid, coach, text))
+    finally:
+        (analyzer._client, config.ACTIVE_PROVIDER,
+         config.AGENT_MODE, analyzer.analyze_meal) = saved
+    return reply, client
+
+
+def _tool_results(client):
+    """Что инструменты вернули модели — по последнему запросу."""
+    # messages — один и тот же список, который агент дополняет по ходу цикла,
+    # поэтому смотрим только последнее состояние, иначе результаты задвоятся.
+    out = []
+    if not client.calls:
+        return out
+    for msg in client.calls[-1]["messages"]:
+        if isinstance(msg.get("content"), list):
+            for block in msg["content"]:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    out.append(json.loads(block["content"]))
+    return out
+
+
+def test_agent_available():
+    import agent as agent_mod
+    saved = (config.AGENT_MODE, config.ACTIVE_PROVIDER)
+    try:
+        config.AGENT_MODE, config.ACTIVE_PROVIDER = True, "anthropic"
+        eq(agent_mod.available(), True, "с флагом и Claude ассистент работает")
+        config.ACTIVE_PROVIDER = "openrouter"
+        eq(agent_mod.available(), False, "на OpenRouter агент не поднимается — tool-use ненадёжен")
+        config.ACTIVE_PROVIDER, config.AGENT_MODE = "anthropic", False
+        eq(agent_mod.available(), False, "рубильник AGENT_MODE=off выключает v2")
+    finally:
+        config.AGENT_MODE, config.ACTIVE_PROVIDER = saved
+    ok(len(__import__("agent").TOOLS) >= 14, "инструменты объявлены")
+
+
+def test_agent_smalltalk():
+    db.ensure_user(AGENT_UID, "Клиент v2")
+    before = len(db.meals_for_date(AGENT_UID, TODAY))
+    reply, client = _run_agent([_Resp([_Say("И тебе спасибо! 🙂")])], "супер, спасибо")
+    eq(reply, "И тебе спасибо! 🙂", "на болтовню — человеческий ответ")
+    eq(len(db.meals_for_date(AGENT_UID, TODAY)), before, "болтовня ничего не записывает")
+    eq(_tool_results(client), [], "инструменты не вызывались")
+
+
+def test_agent_workout_and_edit():
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("save_workout", {"duration_min": 60, "description": "турник"})]),
+         _Resp([_Say("Записал час на турнике 💪")])],
+        "потренировался час на турнике")
+    w = db.workout_for_date(AGENT_UID, TODAY)
+    ok(w is not None, "тренировка записана")
+    eq(w["duration_min"], 60, "длительность 60 минут")
+    ok(w["kcal_burned"], "расход посчитан")
+
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("edit_last", {"entry_type": "workout",
+                                       "fields": {"duration_min": 80}})]),
+         _Resp([_Say("Поправил на 1 ч 20 🙂")])],
+        "поменяй длительность на 1 ч 20")
+    rows = db.workouts_detailed(AGENT_UID, [TODAY])
+    eq(len(rows), 1, "правка не создала дубль")
+    eq(rows[0]["duration_min"], 80, "длительность обновлена")
+    eq(rows[0]["description"], "турник", "описание сохранилось при правке")
+
+
+def test_agent_summary():
+    db.add_meal(AGENT_UID, TODAY, "09:00", "text", "Овсянка", 300, 400, 12, 10, 60, 8, "ок")
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("get_summary", {"period": "today"})]),
+         _Resp([_Say("Сегодня 400 ккал за один приём.")])],
+        "сколько я сегодня съел")
+    res = _tool_results(client)
+    ok(res, "инструмент сводки вызван")
+    eq(res[0]["kcal"], 400, "в фактах есть калории за день")
+    ok("400" in reply, "цифра дошла до ответа")
+
+
+def test_agent_multi_tool():
+    uid = 7031
+    db.ensure_user(uid, "Мультиход")
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("save_meal", {"description": "гречка"}, "a"),
+                _ToolUse("save_water", {"ml": 500}, "b"),
+                _ToolUse("save_wellbeing", {"sleep_h": 5, "energy": 3}, "c")]),
+         _Resp([_Say("Всё записал 🙂")])],
+        "поел гречку, выпил 500 мл, спал плохо", uid=uid,
+        meal={"dish": "Гречка", "total_grams": 200, "total_kcal": 300,
+              "total_protein_g": 10, "total_fat_g": 2, "total_carbs_g": 60,
+              "chek_score": 8, "chek_verdict": "цельная еда", "items": []})
+    eq(len(db.meals_for_date(uid, TODAY)), 1, "еда записана")
+    eq(db.water_total(uid, TODAY), 500, "вода записана")
+    eq(db.get_wellbeing(uid, TODAY)["sleep_h"], 5.0, "сон записан")
+    eq(len(_tool_results(client)), 3, "три инструмента за одно сообщение")
+
+
+def test_agent_advice_goes_to_trainer():
+    uid = 7032
+    db.ensure_user(uid, "Спросил совет")
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("flag_for_trainer", {"text": "спрашивает, что есть для похудения"})]),
+         _Resp([_Say("Это лучше обсудить с Николаем — я передам ему твой вопрос 🙂")])],
+        "что мне есть чтобы похудеть", uid=uid, coach={"name": "Николай", "brand": "Челлендж"})
+    notes = db.trainer_notes_range(uid, [TODAY])
+    eq(len(notes), 1, "вопрос подсвечен тренеру")
+    ok("похудения" in notes[0]["text"], "текст вопроса сохранён")
+    ok("Николаем" in reply, "в ответе отсылка к тренеру")
+
+    persona = __import__("agent")._persona({"name": "Николай", "brand": "Челлендж"})
+    ok("Николай" in persona, "имя тренера в персоне")
+    ok("«Чек» и название платформы клиенту не произноси" in persona,
+       "персона прямо запрещает называть платформу")
+    ok("не ставишь диагнозов" in persona, "медицинская граница проговорена")
+
+
+def test_agent_chat_history():
+    uid = 7033
+    db.ensure_user(uid, "История")
+    for i in range(30):
+        db.add_chat(uid, "user" if i % 2 == 0 else "assistant", f"реплика {i}")
+    tail = db.chat_tail(uid, 15)
+    eq(len(tail), 15, "в контекст идут последние 15 реплик")
+    eq(tail[-1]["content"], "реплика 29", "последняя реплика — самая свежая")
+    ok(db.chat_count(uid) >= 30, "история хранится целиком")
+    db.trim_chat(uid, keep=10)
+    eq(db.chat_count(uid), 10, "подрезка оставляет заданное число")
+
+
+def test_agent_photo_and_undo():
+    import bot as botmod
+    uid = 7034
+    db.ensure_user(uid, "Фото")
+    saved = agent_store = __import__("agent").store_meal(uid, {
+        "dish": "Круассан", "total_grams": 120, "total_kcal": 420, "total_protein_g": 9,
+        "total_fat_g": 24, "total_carbs_g": 42, "chek_score": 3, "chek_verdict": "выпечка"},
+        source="photo")
+    eq(saved["kcal"], 420, "фото-приём сохранён с калориями")
+    eq(len(db.meals_for_date(uid, TODAY)), 1, "запись в дневнике")
+
+    msg = _FakeMessage(uid, 1)
+    asyncio.run(botmod.cmd_undo(msg))
+    eq(len(db.meals_for_date(uid, TODAY)), 0, "/undo убрал последнюю запись")
+
+
+def test_agent_mode_off_keeps_legacy():
+    import bot as botmod
+    saved = config.AGENT_MODE
+    config.AGENT_MODE = False
+    try:
+        msg = _FakeMessage(7035, 1)
+        handled = asyncio.run(botmod.talk_to_agent(msg, 7035, "привет"))
+        eq(handled, False, "с выключенным рубильником агент не перехватывает ввод")
+    finally:
+        config.AGENT_MODE = saved
+    names = [h.callback.__name__ for h in botmod.router.message.handlers]
+    for legacy in ("on_text", "lw_when", "p_age", "add_suppl_name"):
+        ok(legacy in names, f"легаси-хендлер на месте для отката: {legacy}")
+
+
+def test_agent_onboarding_profile():
+    """Профиль добирается разговором, а не анкетой."""
+    uid = 7036
+    db.ensure_user(uid, "Новичок")
+    eq((db.get_user(uid) or {}).get("kcal_target"), None, "профиль пустой")
+
+    # Еда пишется и с пустым профилем
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("save_meal", {"description": "овсянка"})]),
+         _Resp([_Say("Ага, записал. Кстати, сколько ты весишь? Посчитаю норму")])],
+        "съел овсянку", uid=uid,
+        meal={"dish": "Овсянка", "total_grams": 250, "total_kcal": 350, "total_protein_g": 10,
+              "total_fat_g": 8, "total_carbs_g": 55, "chek_score": 8, "chek_verdict": "ок",
+              "items": []})
+    eq(len(db.meals_for_date(uid, TODAY)), 1, "еда записалась при пустом профиле")
+    ok("весишь" in reply, "ассистент мягко доспросил недостающее")
+
+    # «мне 34, рост 180, вес 82» — одним ходом
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("update_profile", {"age": 34, "height_cm": 180, "weight_kg": 82,
+                                            "sex": "Мужчина", "goal": "Поддерживать"})]),
+         _Resp([_Say("Записал! Твоя норма — около 2700 ккал в день")])],
+        "мне 34, рост 180, вес 82, мужчина, хочу поддерживать", uid=uid)
+    u = db.get_user(uid)
+    eq(u["age"], 34, "возраст сохранён")
+    eq(u["height_cm"], 180.0, "рост сохранён")
+    ok(u["kcal_target"], "нормы пересчитались, когда данных стало достаточно")
+    eq(db.weight_history(uid, 1)[0]["kg"], 82.0, "вес попал и в историю веса")
+    res = _tool_results(client)
+    ok(res and res[0].get("targets"), "инструмент вернул посчитанные нормы")
+    ok("норма" in reply.lower(), "человеческое подтверждение, без таблиц")
+
+
+def test_agent_read_tools():
+    uid = 7037
+    db.ensure_user(uid, "Вопросы")
+    db.set_workout_plan(uid, [(1, "18:30"), (3, "18:30")])
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("get_schedule", {})]),
+         _Resp([_Say("Ближайшая — в среду в 18:30")])],
+        "когда у меня тренировка", uid=uid)
+    res = _tool_results(client)[0]
+    eq(res["planned"], True, "расписание найдено")
+    ok(res["next_date"], "названа ближайшая дата")
+    ok(res["next_time"], "названо время")
+    ok(res["next_day"] in ("вторник", "четверг"), "день недели из расписания")
+
+    sid = db.add_supplement(uid, "Магний", "вечером")
+    db.add_supplement(uid, "Витамин D", "утром")
+    db.toggle_supplement_taken(uid, TODAY, sid)
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("get_supplements_today", {})]),
+         _Resp([_Say("Магний уже принял, витамин D ещё нет")])],
+        "какие бады сегодня", uid=uid)
+    res = _tool_results(client)[0]
+    eq(res["total"], 2, "оба БАДа в ответе")
+    eq(res["taken"], 1, "один уже отмечен принятым")
+    taken = {i["name"]: i["taken_today"] for i in res["items"]}
+    eq(taken["Магний"], True, "магний отмечен")
+    eq(taken["Витамин D"], False, "витамин D ещё нет")
+    ok(any(i["timing"] for i in res["items"]), "тайминг приёма отдаётся")
+
+
+def test_agent_no_command_style():
+    """В клиентских текстах не должно остаться командного стиля."""
+    import bot as botmod
+    banned = ("нажми", "нажать", "раздел", "меню", "команда", "команды", "анкет")
+    texts = {
+        "справка": botmod.agent_help_text({"name": "Николай"}),
+        "приветствие": botmod.coach_greeting_v2({"name": "Николай", "brand": "Ч"}, "М"),
+        "персона": __import__("agent")._persona({"name": "Николай", "brand": "Ч"}),
+    }
+    for label, text in texts.items():
+        low = text.lower()
+        if label == "персона":
+            continue          # в персоне слова-запреты встречаются как инструкция
+        for word in banned:
+            ok(word not in low, f"в тексте «{label}» нет слова «{word}»")
+        plain = re.sub(r"<[^>]+>", "", low)          # HTML-теги не считаем
+        ok("/" not in plain, f"в тексте «{label}» нет команд со слэшем")
+
+    persona = texts["персона"]
+    ok("не проси" in persona and "нажать кнопку" in persona,
+       "персона запрещает звать нажимать кнопки")
+    ok("Пользоваться тобой можно сразу" in persona, "профиль не блокирует работу")
+    ok("Не повторяй одну и ту же фразу-шаблон" in persona, "подтверждения вариативны")
+
+
+def test_client_cabinet_token():
+    uid = 7040
+    db.ensure_user(uid, "Кабинет")
+    token = db.cabinet_token_for(uid)
+    ok(token, "ключ странички выдан при создании пользователя")
+    eq(db.user_by_cabinet_token(token)["user_id"], uid, "по ключу находится владелец")
+    eq(db.user_by_cabinet_token("чужой-ключ"), None, "чужой ключ ничего не открывает")
+    eq(db.user_by_cabinet_token(""), None, "пустой ключ ничего не открывает")
+    ok(db.cabinet_token_for(CLIENT_UID) != token, "у каждого клиента свой ключ")
+
+
+async def _me_http(cabinet_token: str):
+    config.DASHBOARD_TOKEN = "owner-test-key"
+    port = free_port()
+    runner = await web_dashboard.start_dashboard(port, host="127.0.0.1")
+    base = f"http://127.0.0.1:{port}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{base}/me") as r:
+                eq(r.status, 401, "личная страничка без ключа — 401")
+            async with s.get(f"{base}/me?key=нет-такого") as r:
+                eq(r.status, 401, "с чужим ключом — 401")
+            async with s.get(f"{base}/me?key={cabinet_token}") as r:
+                eq(r.status, 200, "со своим ключом страничка открывается")
+                ok((await r.text()).strip().startswith("<"), "отдан HTML")
+            async with s.get(f"{base}/me/api/summary?key={cabinet_token}") as r:
+                eq(r.status, 200, "данные отдаются")
+                data = await r.json()
+                ok(data.get("ok"), "срез собран")
+                return data
+    finally:
+        await runner.cleanup()
+
+
+def test_client_cabinet_http():
+    token = db.cabinet_token_for(CLIENT_UID)
+    data = asyncio.run(_me_http(token))
+    eq(data["name"], db.get_user(CLIENT_UID)["name"], "видны данные владельца токена")
+    ok("food" in data and "workouts" in data, "та же карточка, что у тренера")
+    ok("brand" in data, "бренд тренера в шапке")
+
+    # чужие данные по своему ключу не достать
+    other = db.cabinet_token_for(AGENT_UID)
+    ok(other != token, "ключи разные")
+    data2 = asyncio.run(_me_http(other))
+    eq(data2["name"], db.get_user(AGENT_UID)["name"], "по другому ключу — другой клиент")
+
+
+def test_dashboard_link_tool():
+    uid = 7041
+    db.ensure_user(uid, "Ссылка")
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("get_my_dashboard_link", {})]),
+         _Resp([_Say("Держи, тут весь твой прогресс")])],
+        "хочу посмотреть свой прогресс", uid=uid)
+    res = _tool_results(client)[0]
+    ok(res["url"].endswith(db.cabinet_token_for(uid)), "ссылка содержит ключ этого клиента")
+    ok("/me?key=" in res["url"], "ведёт на личную страничку")
+
+
+def test_briefs_without_drafts():
+    ok("ЧЕРНОВИК" not in analyzer.BRIEF_SYSTEM,
+       "в тренерском брифе больше нет черновика сообщения")
+    ok("ЧТО ПРОИСХОДИТ" in analyzer.BRIEF_SYSTEM, "блок «что происходит» остался")
+    ok("НА ЧТО ОБРАТИТЬ ВНИМАНИЕ" in analyzer.BRIEF_SYSTEM, "блок внимания остался")
+    ok("он напишет сам" in analyzer.BRIEF_SYSTEM, "сказано, почему черновика нет")
+
+    client_prompt = analyzer.CLIENT_BRIEF_SYSTEM.format(coach="Николай")
+    ok("на «ты»" in client_prompt, "клиентский разбор обращается на «ты»")
+    ok("ЧЕРНОВИК" not in client_prompt, "в клиентском разборе черновика нет")
+    ok("обсуди это с Николай" in client_prompt, "решения адресованы тренеру")
+    ok("не ставь диагнозов" in client_prompt, "медицинская граница сохранена")
+
+
+def test_onboarding_mentions_cabinet_once():
+    src = open("bot.py", encoding="utf-8").read()
+    eq(src.count("своя страничка с прогрессом"), 1,
+       "ссылку на кабинет упоминаем в онбординге ровно один раз")
+
+
+def test_agent_v2_texts():
+    import bot as botmod
+    help_text = botmod.agent_help_text({"name": "Николай"})
+    ok("просто разговаривать" in help_text, "справка v2 про живой разговор")
+    ok("голосом" in help_text and "фото" in help_text, "упомянуты голос и фото")
+    ok("Николай" in help_text, "разборы адресованы тренеру")
+    ok("/train" not in help_text and "/feel" not in help_text, "списка команд в справке нет")
+
+    greet = botmod.coach_greeting_v2({"name": "Николай", "brand": "Челлендж"}, "Михаил")
+    ok("наговаривать" in greet or "писать" in greet, "приветствие про свободный ввод")
+    ok("ничего специально оформлять не надо" in greet,
+       "оформлять ничего не надо — и без слова «команды»")
+    ok("Чек" not in greet, "платформа в брендовом приветствии не звучит")
+
+    eq(botmod.AGENT_COMMANDS, [], "у клиента меню команд пустое — кнопки «Меню» нет")
+    eq([c.command for c in botmod.COACH_COMMANDS], ["clients"],
+       "у тренера в его чате одна команда")
+
+
 # ------------------------------------------------- маршрутизация команд в диалогах
 
 
@@ -2180,6 +2579,42 @@ def main() -> int:
     test_announce_plan()
     print("- анонс: рассылка, блокировки, лимиты")
     test_announce_send()
+    print("- v2: рубильник и доступность агента")
+    test_agent_available()
+    print("- v2: болтовня без записей")
+    test_agent_smalltalk()
+    print("- v2: тренировка и правка без дубля")
+    test_agent_workout_and_edit()
+    print("- v2: факты по своим цифрам")
+    test_agent_summary()
+    print("- v2: несколько инструментов за сообщение")
+    test_agent_multi_tool()
+    print("- v2: совет уходит тренеру")
+    test_agent_advice_goes_to_trainer()
+    print("- v2: история разговора")
+    test_agent_chat_history()
+    print("- v2: фото и /undo")
+    test_agent_photo_and_undo()
+    print("- v2: рубильник off сохраняет легаси")
+    test_agent_mode_off_keeps_legacy()
+    print("- v2: онбординг и профиль разговором")
+    test_agent_onboarding_profile()
+    print("- v2: расписание и БАДы вопросом")
+    test_agent_read_tools()
+    print("- v2: командного стиля не осталось")
+    test_agent_no_command_style()
+    print("- кабинет клиента: ключи доступа")
+    test_client_cabinet_token()
+    print("- кабинет клиента: HTTP и изоляция данных")
+    test_client_cabinet_http()
+    print("- кабинет клиента: ссылка из чата")
+    test_dashboard_link_tool()
+    print("- брифы без черновиков")
+    test_briefs_without_drafts()
+    print("- онбординг: кабинет упомянут один раз")
+    test_onboarding_mentions_cabinet_once()
+    print("- v2: тексты приветствия и справки")
+    test_agent_v2_texts()
     print("- bot: /cancel и команды внутри диалогов")
     test_routing()
 

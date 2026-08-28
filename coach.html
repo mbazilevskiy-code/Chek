@@ -597,6 +597,12 @@ function renderDetail(uid,s,p){
     <div class="tiles">${tiles.join("")}</div>
     <div class="card"><h3>${isDay?"Сегодня":"Динамика "+cap} <span class="src">${s.oura?'Oura + бот':'бот'}</span></h3>
       <p class="cap">${dynCap}</p>${dynHtml}</div>
+    ${(s.trainer_notes&&s.trainer_notes.length)?`<div class="card"><h3>🔔 Ассистент подсветил
+      <span class="src">${s.trainer_notes.length}</span></h3>
+      <p class="cap">Вопросы и жалобы клиента, которые стоит обсудить</p>
+      <div class="supp">${s.trainer_notes.map(n=>`<div class="supp-row">
+        <span class="box on">!</span><span>${esc(n.text)}</span>
+        <span class="tm">${esc(n.date)}</span></div>`).join("")}</div></div>`:""}
     <div class="card"><h3>💍 Кольцо Oura ${ouraHead}</h3>
       <p class="cap">Сон, активность и показатели ${cap}</p>${ouraHtml}</div>
     <div class="card"><h3>🏋️ Тренировки ${woHead}</h3>

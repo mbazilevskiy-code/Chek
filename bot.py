@@ -23,6 +23,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
     BotCommand,
     CallbackQuery,
     InlineKeyboardButton,
@@ -33,6 +35,7 @@ from aiogram.types import (
     ReplyKeyboardRemove,
 )
 
+import agent
 import analyzer
 import config
 import db
@@ -523,6 +526,37 @@ HELP_TEXT = (
 CLIENT_NOTE = "\n\n<i>Я собираю твои данные для тренера — разбор и советы даёт он.</i>"
 
 
+def agent_help_text(coach: dict | None) -> str:
+    """Справка v2: не список команд, а «как со мной разговаривать»."""
+    cname = html.escape((coach or {}).get("name") or "")
+    tail = (f"\n\nРазборы, советы и план — это к {cname}. Я передам ему всё, что запишу."
+            if cname else "")
+    return (
+        "Со мной можно просто разговаривать 🙂\n\n"
+        "Пиши или наговаривай голосом что угодно: что съел, сколько выпил, как прошла "
+        "тренировка, как спал, как самочувствие — я пойму и запишу. Фото еды тоже "
+        "присылай, посчитаю по нему. Бланк анализов — файлом или фото.\n\n"
+        "Поправить запись можно словами: «поменяй тренировку на час», «убери последнее».\n"
+        "Спросить о своих цифрах — так же: «сколько я сегодня съел?», "
+        "«когда у меня тренировка?», «какие бады сегодня?»" + tail
+    )
+
+
+def coach_greeting_v2(coach: dict, user_name: str) -> str:
+    """Приветствие v2: без списка команд, про живой разговор."""
+    cname = html.escape(coach.get("name") or "тренер")
+    brand = html.escape(coach.get("brand") or "дневник")
+    return (
+        f"Привет, {html.escape(user_name)}! 👋\n"
+        f"Я — <b>{brand}</b>, ассистент тренера <b>{cname}</b>.\n\n"
+        "Мне можно просто писать, наговаривать голосом или кидать фото — "
+        "что съел, как потренировался, как спал и как самочувствие. "
+        "Я пойму и запишу — ничего специально оформлять не надо.\n\n"
+        "Спросить о своих цифрах тоже можно: «сколько я сегодня съел?»\n\n"
+        f"Разборы и советы — от {cname}: я собираю данные и передаю ему 🙌"
+    )
+
+
 def coach_greeting(coach: dict, user_name: str) -> str:
     cname = html.escape(coach.get("name") or "тренер")
     brand = html.escape(coach.get("brand") or "Чек")
@@ -599,6 +633,36 @@ async def on_voice(message: Message, state: FSMContext) -> None:
     await route_transcript(message, state, text)
 
 
+async def talk_to_agent(message: Message, uid: int, text: str,
+                        *, system_note: str | None = None) -> bool:
+    """Отдаёт сообщение разговорному ассистенту. False — v2 выключена."""
+    if not agent.available():
+        return False
+    coach = coach_of(message.bot.id)
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    db.add_chat(uid, "user", text)
+    try:
+        reply, link = await agent.handle_message(uid, coach, text, system_note=system_note)
+    except DemoModeError:
+        await message.answer(DEMO_HOWTO)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.exception("Ассистент не ответил")
+        await message.answer(_error_reply(e))
+        return True
+    if reply:
+        db.add_chat(uid, "assistant", reply)
+        db.trim_chat(uid)
+        # Ассистент пишет обычным текстом: HTML-разметку не включаем, иначе
+        # ссылки и символы вроде «&» ломались бы.
+        kb = None
+        if link:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📈 Мой прогресс", url=link)]])
+        await message.answer(reply, parse_mode=None, reply_markup=kb)
+    return True
+
+
 async def route_transcript(message: Message, state: FSMContext, text: str) -> None:
     """Распознанный текст уходит туда же, куда ушёл бы напечатанный."""
     current = await state.get_state()
@@ -620,7 +684,10 @@ async def route_transcript(message: Message, state: FSMContext, text: str) -> No
                              "или выйди: /cancel")
         return
 
-    # Вне диалогов — общий разбор: бот сам решает, в какую рубрику это писать.
+    # Вне диалогов — разговорный ассистент. Роутер остаётся запасным путём,
+    # если v2 выключена рубильником AGENT_MODE.
+    if await talk_to_agent(message, message.from_user.id, text):
+        return
     await handle_free_input(message, state, text)
 
 
@@ -864,7 +931,7 @@ async def cmd_start(message: Message) -> None:
 
     if coach:
         user = db.get_user(uid)
-        text = coach_greeting(coach, name)
+        text = coach_greeting_v2(coach, name) if agent.available() else coach_greeting(coach, name)
         if not (user and user.get("consent")):
             await message.answer(text + "\n" + consent_text(coach), reply_markup=CONSENT_KB)
         else:
@@ -894,6 +961,16 @@ async def cb_consent_yes(cb: CallbackQuery) -> None:
         await cb.message.edit_reply_markup(reply_markup=None)
     except TelegramBadRequest:
         pass
+    if agent.available():
+        await cb.message.answer(
+            "Отлично, поехали 🚀\n\n"
+            "Рассказывай мне, как идёт день: что съел, сколько выпил, как потренировался, "
+            "как спал. Можно писать, наговаривать голосом или кидать фото — я пойму и запишу.\n\n"
+            "И расскажи пару слов о себе: сколько тебе лет, рост-вес? Посчитаю твою норму 🙂\n\n"
+            "Кстати, у тебя есть своя страничка с прогрессом — скажи, если захочешь ссылку.",
+            parse_mode=None,
+        )
+        return
     await cb.message.answer(
         "Отлично, поехали! 🚀\n\n"
         "Для начала рассчитаем твою норму калорий и воды — жми /profile "
@@ -920,6 +997,9 @@ async def cb_consent_no(cb: CallbackQuery) -> None:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
+    if agent.available():
+        await message.answer(agent_help_text(coach_of(message.bot.id)))
+        return
     note = CLIENT_NOTE if is_client_bot(message.bot.id) else ""
     await message.answer(HELP_TEXT + note)
 
@@ -1412,21 +1492,8 @@ async def lw_when(message: Message, state: FSMContext) -> None:
 
 
 async def _workout_kcal(uid: int, date: str, hhmm: str, minutes: int) -> tuple[int, str]:
-    """Расход за тренировку: число из кольца, если тренировка в нём есть, иначе оценка."""
-    if db.oura_connected(uid):
-        stored = oura_mod.match_workout(db.oura_workouts_for_date(uid, date), hhmm, minutes)
-        if stored and stored.get("calories"):
-            return int(round(float(stored["calories"]))), "oura"
-        if config.OURA_ENABLED:
-            try:
-                hit = oura_mod.match_workout(
-                    await oura_mod.fetch_workouts(uid, date), hhmm, minutes)
-                if hit and hit.get("calories"):
-                    return int(round(float(hit["calories"]))), "oura"
-            except Exception:  # noqa: BLE001
-                log.warning("Oura: тренировки за день не получены", exc_info=True)
-    user = db.get_user(uid) or {}
-    return nutrition.workout_kcal_estimate(user.get("weight_kg"), minutes), "estimate"
+    """Расход за тренировку. Реализация одна — в agent, здесь только вызов."""
+    return await agent.workout_kcal(uid, date, hhmm, minutes)
 
 
 @router.message(LogWorkout.duration)
@@ -1612,17 +1679,19 @@ async def reminder_loop() -> None:
                     if p["dow"] == dow and p["time"] == hm and _fire_once(uid, date, f"wo{p['id']}"):
                         await bot.send_message(
                             uid,
-                            "🏋️ По расписанию сегодня тренировка.\n"
-                            "Как закончишь — запиши её:",
-                            reply_markup=WORKOUT_NUDGE_KB,
+                            "🏋️ Сегодня по плану тренировка.\n"
+                            "Как сделаешь — просто расскажи мне, я запишу 🙂",
+                            reply_markup=None if config.AGENT_MODE else WORKOUT_NUDGE_KB,
                         )
                 ev = user.get("evening_time") or "21:00"
                 if ev == hm and _fire_once(uid, date, "evening"):
                     await bot.send_message(
                         uid,
-                        "🌙 <b>Вечерняя сводка дня</b>\n\n"
-                        + build_day_overview(uid, date, show_advice(bot.id)),
-                        reply_markup=evening_kb(uid, date),
+                        "🌙 <b>Как прошёл день</b>\n\n"
+                        + build_day_overview(uid, date, show_advice(bot.id))
+                        + ("\n\nЕсли что-то забыл записать — просто расскажи 🙂"
+                           if config.AGENT_MODE else ""),
+                        reply_markup=None if config.AGENT_MODE else evening_kb(uid, date),
                     )
         except Exception:  # noqa: BLE001
             log.exception("Ошибка в цикле напоминаний")
@@ -2002,6 +2071,19 @@ async def _process_labs(message: Message, data: bytes, media_type: str,
     # Подтверждение нейтральное: цифры — да, трактовка — нет. Разбор идёт тренеру.
     n = len(parsed["markers"])
     abn = [m for m in parsed["markers"] if m["flag"] in ("низко", "высоко")]
+    if agent.available():
+        try:
+            await note.delete()
+        except TelegramBadRequest:
+            pass
+        await talk_to_agent(
+            message, uid, "прислал бланк анализов",
+            system_note=(f"клиент прислал бланк «{parsed['panel']}» от {date}, я разобрал его "
+                         f"и записал: {n} показателей, {len(abn)} вне нормы. Подтверди "
+                         "нейтрально, скажи, что передал тренеру, и что диагнозов ты не ставишь."),
+        )
+        return
+
     tail = ("Записал в дневник." if not is_client_bot(message.bot.id) else "Передал тренеру.")
     await note.edit_text(
         f"✅ Разобрал бланк: <b>{html.escape(parsed['panel'])}</b> от {date} — "
@@ -2285,12 +2367,53 @@ async def p_goal_bad(message: Message) -> None:
 
 # ---------------------------------------------------------------- еда: фото и текст
 
+async def photo_via_agent(message: Message, image_bytes: bytes, media_type: str,
+                          caption: str | None) -> None:
+    """Фото разбираем как раньше, но подтверждение формулирует ассистент —
+    и запись попадает ему в контекст, чтобы «поменяй…» дальше работало."""
+    uid = message.from_user.id
+    _ensure(message)
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    note = await message.answer("🔍 Смотрю, что на фото…")
+    try:
+        data = await analyzer.analyze_meal(image_bytes=image_bytes, media_type=media_type,
+                                           caption=caption)
+    except DemoModeError:
+        await note.edit_text(DEMO_HOWTO)
+        return
+    except Exception as e:  # noqa: BLE001
+        log.exception("Разбор фото не удался")
+        await note.edit_text(_error_reply(e))
+        return
+
+    if not data.get("is_food"):
+        await note.edit_text("На фото не вижу еды 🤔 Если это бланк анализов — "
+                             "пришли его файлом, разберу.")
+        return
+
+    saved = agent.store_meal(uid, data, source="photo")
+    try:
+        await note.delete()
+    except TelegramBadRequest:
+        pass
+    await talk_to_agent(
+        message, uid, (caption or "").strip() or "прислал фото еды",
+        system_note=("клиент прислал фото еды, я разобрал его и уже записал: "
+                     + json.dumps(saved, ensure_ascii=False)
+                     + ". Подтверди коротко, по-человечески, назови калории и БЖУ."),
+    )
+
+
 @router.message(F.photo)
 async def on_photo(message: Message) -> None:
     photo = message.photo[-1]
     buf = await message.bot.download(photo)
+    data = buf.read()
+    if agent.available():
+        await photo_via_agent(message, data, "image/jpeg", message.caption)
+        return
     await analyze_and_reply(
-        message, image_bytes=buf.read(), media_type="image/jpeg",
+        message, image_bytes=data, media_type="image/jpeg",
         caption=message.caption, source="photo",
     )
 
@@ -2316,8 +2439,12 @@ async def on_document(message: Message) -> None:
                              "(со сжатием) — так даже лучше.")
         return
     buf = await message.bot.download(doc)
+    data = buf.read()
+    if agent.available():
+        await photo_via_agent(message, data, doc.mime_type, message.caption)
+        return
     await analyze_and_reply(
-        message, image_bytes=buf.read(), media_type=doc.mime_type,
+        message, image_bytes=data, media_type=doc.mime_type,
         caption=message.caption, source="photo",
     )
 
@@ -2327,28 +2454,42 @@ async def on_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     low = text.lower()
 
-    m = WATER_RE.match(low)
-    if m:
-        uid = message.from_user.id
-        date, time_ = now_date_time()
-        _ensure(message)
-        db.add_water(uid, date, time_, int(m.group(1)))
-        await message.answer(water_text(uid, date, db.get_user(uid)), reply_markup=WATER_KB)
-        return
-    if low in ("вода", "💧"):
-        uid = message.from_user.id
-        date, _ = now_date_time()
-        await message.answer(water_text(uid, date, db.get_user(uid)), reply_markup=WATER_KB)
-        return
+    # Быстрые шорткаты с кнопками — только в прежнем режиме. В v2 воду
+    # записывает ассистент, и никаких клавиатур клиент не видит.
+    if not agent.available():
+        m = WATER_RE.match(low)
+        if m:
+            uid = message.from_user.id
+            date, time_ = now_date_time()
+            _ensure(message)
+            db.add_water(uid, date, time_, int(m.group(1)))
+            await message.answer(water_text(uid, date, db.get_user(uid)), reply_markup=WATER_KB)
+            return
+        if low in ("вода", "💧"):
+            uid = message.from_user.id
+            date, _ = now_date_time()
+            await message.answer(water_text(uid, date, db.get_user(uid)), reply_markup=WATER_KB)
+            return
 
     if text.startswith("/"):
+        if agent.available():
+            # Про команды клиенту не рассказываем — отвечает ассистент.
+            _ensure(message)
+            if await talk_to_agent(message, message.from_user.id, text):
+                return
         await message.answer("Не знаю такую команду 🤔 Список команд: /help")
         return
     if len(text) < 3:
+        if agent.available():
+            _ensure(message)
+            if await talk_to_agent(message, message.from_user.id, text):
+                return
         await message.answer("Расскажи чуть подробнее — или пришли фото 📸")
         return
-    # Свободный текст разбирает роутер: он сам решит, это еда, вода,
-    # тренировка или самочувствие.
+    _ensure(message)
+    if await talk_to_agent(message, message.from_user.id, text):
+        return
+    # Запасной путь при AGENT_MODE=off: разбор роутером по рубрикам.
     await handle_free_input(message, state, text)
 
 
@@ -2366,6 +2507,12 @@ def _check_env() -> list[str]:
         problems.append("TELEGRAM_BOT_TOKEN — токен бота из @BotFather")
     return problems
 
+
+# В v2 клиенту не нужны команды: он просто разговаривает. Оставляем минимум,
+# остальные продолжают работать, но в меню Telegram не светятся.
+# Клиенту команды не показываем вообще. Тренеру в его личном чате — одна.
+AGENT_COMMANDS = []
+COACH_COMMANDS = [BotCommand(command="clients", description="Мои клиенты")]
 
 CLIENT_COMMANDS = [
     BotCommand(command="today", description="Весь день: еда, вода, тренировка"),
@@ -2437,7 +2584,16 @@ async def main() -> None:
 
     for b in bots:
         try:
-            await b.set_my_commands(CLIENT_COMMANDS)
+            if config.AGENT_MODE:
+                # У клиента кнопки «Меню» нет вовсе: он просто разговаривает.
+                await b.set_my_commands([], scope=BotCommandScopeDefault())
+                coach = COACH_BY_BOT.get(b.id)
+                if coach and coach.get("coach_user_id"):
+                    await b.set_my_commands(
+                        COACH_COMMANDS,
+                        scope=BotCommandScopeChat(chat_id=coach["coach_user_id"]))
+            else:
+                await b.set_my_commands(CLIENT_COMMANDS)
         except Exception:  # noqa: BLE001
             pass
 

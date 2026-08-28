@@ -1,5 +1,6 @@
 """SQLite-дневник питания, воды, привычек и тренировок."""
 import json
+import secrets
 import sqlite3
 from contextlib import contextmanager
 
@@ -155,6 +156,32 @@ CREATE TABLE IF NOT EXISTS oura_workouts (
 );
 CREATE INDEX IF NOT EXISTS idx_oura_wo_user_day ON oura_workouts(user_id, day);
 
+CREATE TABLE IF NOT EXISTS chat_history (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    role    TEXT NOT NULL,          -- user | assistant
+    content TEXT NOT NULL,
+    ts      TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_history(user_id, id);
+
+CREATE TABLE IF NOT EXISTS weight_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    date    TEXT NOT NULL,
+    kg      REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_weight_user ON weight_log(user_id, date);
+
+CREATE TABLE IF NOT EXISTS trainer_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    date       TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notes_user ON trainer_notes(user_id, date);
+
 CREATE TABLE IF NOT EXISTS coaches (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     bot_token     TEXT UNIQUE NOT NULL,
@@ -186,6 +213,7 @@ _USER_COLUMNS = {
     "reminders_on": "INTEGER DEFAULT 1",
     "coach_id": "INTEGER",           # NULL = личный бот владельца
     "consent": "INTEGER DEFAULT 0",  # согласие клиента на доступ тренера
+    "cabinet_token": "TEXT",         # ключ к личной страничке клиента (/me)
 }
 
 # Новые колонки supplements. План приёма задаёт сам клиент:
@@ -264,6 +292,11 @@ def init_db() -> None:
         for col, ddl in _USER_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+        # У всех, кто завёлся до появления личной странички, ключа нет — догенерим.
+        for row in c.execute("SELECT user_id FROM users WHERE cabinet_token IS NULL "
+                             "OR cabinet_token = ''").fetchall():
+            c.execute("UPDATE users SET cabinet_token = ? WHERE user_id = ?",
+                      (secrets.token_urlsafe(16), row["user_id"]))
         have = {r["name"] for r in c.execute("PRAGMA table_info(supplements)").fetchall()}
         for col, ddl in _SUPPL_COLUMNS.items():
             if col not in have:
@@ -315,8 +348,9 @@ def ensure_user(user_id: int, name: str | None = None, coach_id: int | None = No
     другому, бот переспросит.
     """
     with _conn() as c:
-        c.execute("INSERT OR IGNORE INTO users(user_id, name, coach_id) VALUES(?, ?, ?)",
-                  (user_id, name, coach_id))
+        c.execute("INSERT OR IGNORE INTO users(user_id, name, coach_id, cabinet_token) "
+                  "VALUES(?, ?, ?, ?)",
+                  (user_id, name, coach_id, secrets.token_urlsafe(16)))
         if name:
             c.execute("UPDATE users SET name = ? WHERE user_id = ?", (name, user_id))
         if coach_id is not None:
@@ -336,6 +370,25 @@ def update_user(user_id: int, **fields) -> None:
     cols = ", ".join(f"{k} = ?" for k in fields)
     with _conn() as c:
         c.execute(f"UPDATE users SET {cols} WHERE user_id = ?", (*fields.values(), user_id))
+
+
+def user_by_cabinet_token(token: str) -> dict | None:
+    """Клиент по ключу его личной странички."""
+    if not token:
+        return None
+    with _conn() as c:
+        row = c.execute("SELECT * FROM users WHERE cabinet_token = ?", (token,)).fetchone()
+        return dict(row) if row else None
+
+
+def cabinet_token_for(user_id: int) -> str:
+    """Ключ странички клиента; создаёт, если его почему-то нет."""
+    user = get_user(user_id) or {}
+    token = user.get("cabinet_token")
+    if not token:
+        token = secrets.token_urlsafe(16)
+        update_user(user_id, cabinet_token=token)
+    return token
 
 
 def all_user_ids() -> list[int]:
@@ -858,6 +911,98 @@ def water_by_date(user_id: int, dates: list[str]) -> dict[str, int]:
             (user_id, *dates),
         ).fetchall()
         return {r["date"]: int(r["s"]) for r in rows}
+
+
+# ---------- память разговора ----------
+
+def add_chat(user_id: int, role: str, content: str) -> None:
+    """Реплика в историю разговора. Пишем и клиента, и ассистента."""
+    content = (content or "").strip()
+    if not content:
+        return
+    with _conn() as c:
+        c.execute("INSERT INTO chat_history(user_id, role, content) VALUES(?,?,?)",
+                  (user_id, role, content[:4000]))
+
+
+def chat_tail(user_id: int, limit: int = 15) -> list[dict]:
+    """Последние реплики по возрастанию — как их читает модель."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT role, content, ts FROM chat_history WHERE user_id = ? "
+            "ORDER BY id DESC LIMIT ?", (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def trim_chat(user_id: int, keep: int = 400) -> int:
+    """Подрезает старое: история нужна, но не бесконечная."""
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM chat_history WHERE user_id = ? AND id NOT IN "
+            "(SELECT id FROM chat_history WHERE user_id = ? ORDER BY id DESC LIMIT ?)",
+            (user_id, user_id, keep),
+        )
+        return cur.rowcount
+
+
+def chat_count(user_id: int) -> int:
+    with _conn() as c:
+        return int(c.execute("SELECT COUNT(*) n FROM chat_history WHERE user_id = ?",
+                             (user_id,)).fetchone()["n"])
+
+
+# ---------- вес ----------
+
+def add_weight(user_id: int, date: str, kg: float) -> None:
+    with _conn() as c:
+        c.execute("INSERT INTO weight_log(user_id, date, kg) VALUES(?,?,?)",
+                  (user_id, date, float(kg)))
+
+
+def weight_history(user_id: int, limit: int = 30) -> list[dict]:
+    """История веса, свежее первым."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT date, kg FROM weight_log WHERE user_id = ? ORDER BY date DESC, id DESC "
+            "LIMIT ?", (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_last_weight(user_id: int) -> float | None:
+    with _conn() as c:
+        row = c.execute("SELECT id, kg FROM weight_log WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                        (user_id,)).fetchone()
+        if not row:
+            return None
+        c.execute("DELETE FROM weight_log WHERE id = ?", (row["id"],))
+        return float(row["kg"])
+
+
+# ---------- заметки тренеру ----------
+
+def add_trainer_note(user_id: int, date: str, text: str) -> None:
+    """Что ассистент решил подсветить тренеру: вопрос, жалоба, тревога клиента."""
+    text = (text or "").strip()
+    if not text:
+        return
+    with _conn() as c:
+        c.execute("INSERT INTO trainer_notes(user_id, date, text) VALUES(?,?,?)",
+                  (user_id, date, text[:1000]))
+
+
+def trainer_notes_range(user_id: int, dates: list[str]) -> list[dict]:
+    if not dates:
+        return []
+    marks = ",".join("?" for _ in dates)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT date, text, created_at FROM trainer_notes "
+            f"WHERE user_id = ? AND date IN ({marks}) ORDER BY date DESC, id DESC",
+            (user_id, *dates),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------- привычки ----------

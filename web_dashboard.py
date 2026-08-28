@@ -14,6 +14,7 @@ import nutrition
 
 DASHBOARD_FILE = Path(__file__).parent / "dashboard.html"
 COACH_FILE = Path(__file__).parent / "coach.html"
+CLIENT_FILE = Path(__file__).parent / "client.html"
 
 
 def _owner_uid() -> int | None:
@@ -102,6 +103,23 @@ async def _auth_middleware(request: web.Request, handler):
     """Владелец — по DASHBOARD_TOKEN; кабинет тренера (/coach*) — по ключу кабинета."""
     if request.path.startswith("/oura/"):
         return await handler(request)  # OAuth-callback защищён параметром state
+    if request.path.startswith("/me"):
+        supplied = request.query.get("key") or request.cookies.get("chek_me")
+        me = db.user_by_cabinet_token(supplied or "")
+        if me is None:
+            return web.Response(
+                status=401,
+                text="Личная страничка открывается по персональной ссылке.\n"
+                     "Попроси её у своего ассистента в чате — он пришлёт.",
+                content_type="text/plain", charset="utf-8",
+            )
+        request["me"] = me
+        resp = await handler(request)
+        if request.query.get("key") == me["cabinet_token"]:
+            resp.set_cookie("chek_me", me["cabinet_token"],
+                            max_age=60 * 60 * 24 * 90, httponly=True, samesite="Lax")
+        return resp
+
     if request.path.startswith("/coach"):
         supplied = request.query.get("key") or request.cookies.get("chek_coach")
         coach = db.coach_by_cabinet_token(supplied or "")
@@ -434,7 +452,8 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
     s.update({
         "sex": user.get("sex"), "age": user.get("age"), "goal": user.get("goal"),
         "wellbeing": wellbeing, "supplements": supplements, "labs": labs, "oura": oura,
-        "food": food, "workouts": workouts, "bucket": bucket,
+        "food": food, "workouts": workouts,
+        "trainer_notes": db.trainer_notes_range(uid, dates), "bucket": bucket,
         "last_activity": logged[-1]["date"] if logged else None,
         "last_activity_label": logged[-1]["label"] if logged else None,
     })
@@ -506,6 +525,10 @@ def week_data_text(uid: int) -> str:
         names = ", ".join(f"{x['name']}" + (f" ({x['timing']})" if x['timing'] else "")
                           for x in sup["list"])
         lines.append(f"БАДы: {names}. Сегодня принято {sup['taken']}/{sup['total']}.")
+    notes = detail.get("trainer_notes") or []
+    if notes:
+        lines.append("Ассистент подсветил: "
+                     + "; ".join(f"{n['date']} — {n['text'][:160]}" for n in notes[:5]))
     labs = detail.get("labs")
     if labs:
         abn = [m for m in labs["markers"] if m["flag"] in ("низко", "высоко")]
@@ -516,6 +539,37 @@ def week_data_text(uid: int) -> str:
         else:
             lines.append(f"Анализы от {labs['last_date']}: все в норме.")
     return "\n".join(lines)
+
+
+async def _me_index(request: web.Request) -> web.StreamResponse:
+    return web.FileResponse(CLIENT_FILE, headers={"Cache-Control": "no-store"})
+
+
+async def _me_api_summary(request: web.Request) -> web.Response:
+    """Тот же срез, что видит тренер, но строго по владельцу токена."""
+    me = request["me"]
+    days = resolve_days(me["user_id"], request.query.get("days"))
+    data = client_detail(me["user_id"], days)
+    coach = db.coach_by_id(me["coach_id"]) if me.get("coach_id") else None
+    data["brand"] = (coach or {}).get("brand") or ""
+    data["coach_name"] = (coach or {}).get("name") or ""
+    return web.json_response(data)
+
+
+async def _me_api_brief(request: web.Request) -> web.Response:
+    """Разбор недели для самого клиента: без черновиков сообщений."""
+    import analyzer
+
+    me = request["me"]
+    coach = db.coach_by_id(me["coach_id"]) if me.get("coach_id") else None
+    try:
+        text = await analyzer.generate_client_brief(
+            me.get("name") or "клиент", week_data_text(me["user_id"]), coach)
+    except analyzer.DemoModeError:
+        return web.json_response({"error": "ИИ-ключ не настроен на сервере"}, status=400)
+    except Exception as e:  # noqa: BLE001
+        return web.json_response({"error": f"не получилось: {str(e)[:200]}"}, status=502)
+    return web.json_response({"brief": text})
 
 
 async def _coach_index(request: web.Request) -> web.StreamResponse:
@@ -607,6 +661,9 @@ async def start_dashboard(port: int, host: str | None = None) -> web.AppRunner:
     app = web.Application(middlewares=[_auth_middleware])
     app.router.add_get("/", _index)
     app.router.add_get("/api/summary", _api_summary)
+    app.router.add_get("/me", _me_index)
+    app.router.add_get("/me/api/summary", _me_api_summary)
+    app.router.add_post("/me/api/brief", _me_api_brief)
     app.router.add_get("/coach", _coach_index)
     app.router.add_get("/coach/api/me", _coach_api_me)
     app.router.add_get("/coach/api/clients", _coach_api_clients)

@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мой прогресс</title>
+<style>
+:root{
+  color-scheme:light;
+  --page:#f4f6f3;--surface:#ffffff;--surface-2:#f8faf7;
+  --ink:#151a13;--ink-2:#535a4c;--muted:#8b917f;
+  --line:#e6e9e0;--grid:#e9ebe3;--baseline:#c9ccc0;
+  --brand:#2f7a3a;--brand-soft:#e4f0e2;
+  --s1:#2a78d6;--s3:#1baf7a;
+  --ok:#0a8f2c;--ok-bg:#e2f2e2;--warn:#b57900;--warn-bg:#fbf0d6;--crit:#cf3b3b;--crit-bg:#fbe3e3;
+  --shadow:0 1px 2px rgba(20,26,19,.05),0 4px 16px rgba(20,26,19,.04);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --page:#0e120d;--surface:#171c14;--surface-2:#131810;
+  --ink:#eef1e9;--ink-2:#b6bcab;--muted:#828874;
+  --line:#28301f;--grid:#242b1c;--baseline:#3a4230;
+  --brand:#7dc47f;--brand-soft:#213019;
+  --s1:#3987e5;--s3:#1fb989;
+  --ok:#3cc65a;--ok-bg:#17301a;--warn:#e2a52a;--warn-bg:#312811;--crit:#e56b6b;--crit-bg:#331a1a;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.5}
+.wrap{max-width:900px;margin:0 auto;padding:18px 18px 60px}
+header{margin-bottom:6px}
+h1{font-size:1.2rem;margin:0}
+.sub{color:var(--muted);font-size:.85rem}
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;
+  padding:2px;gap:2px;margin:12px 0 2px;flex-wrap:wrap}
+.seg button{border:0;background:none;color:var(--ink-2);font:inherit;font-size:.84rem;font-weight:600;
+  padding:6px 14px;border-radius:8px;cursor:pointer;white-space:nowrap}
+.seg button.on{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.seg button:disabled{opacity:.55;cursor:progress}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 16px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:11px 13px;box-shadow:var(--shadow)}
+.tile .lbl{color:var(--ink-2);font-size:.76rem}
+.tile .val{font-size:1.35rem;font-weight:650;letter-spacing:-.02em;margin-top:3px}
+.tile .val small{font-size:.8rem;font-weight:400;color:var(--muted)}
+.tile .d{font-size:.75rem;margin-top:1px;color:var(--muted)}
+.tile.warn{border-color:var(--warn)}
+.tile.empty .val{color:var(--muted);font-size:1rem;font-weight:500;margin-top:6px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px 17px;box-shadow:var(--shadow);margin-bottom:14px}
+.card h3{margin:0 0 3px;font-size:.98rem}
+.card .cap{color:var(--muted);font-size:.8rem;margin:0 0 12px}
+.src{font-size:.7rem;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:6px}
+.charts{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.chart .ct{font-size:.8rem;color:var(--ink-2)}
+.chart .cv{font-size:1rem;font-weight:650}
+.chart svg{width:100%;height:50px;display:block;margin-top:3px}
+.nodata{color:var(--muted);font-size:.86rem;background:var(--surface-2);border:1px dashed var(--line);
+  border-radius:10px;padding:14px;text-align:center}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid2 .card{margin:0}
+.wb{display:flex;flex-direction:column;gap:9px}
+.wb-row{display:grid;grid-template-columns:96px 1fr 26px;align-items:center;gap:9px;font-size:.86rem}
+.bar{height:8px;border-radius:5px;background:var(--grid);overflow:hidden;display:block}
+.bar>i{display:block;height:100%;border-radius:5px}
+.row{display:flex;align-items:center;gap:9px;font-size:.88rem;padding:3px 0}
+.row .box{width:17px;height:17px;border-radius:5px;flex:none;display:flex;align-items:center;
+  justify-content:center;font-size:.7rem;color:#fff}
+.box.on{background:var(--ok)}.box.off{background:transparent;border:1.5px solid var(--baseline)}
+.row .tm{margin-left:auto;color:var(--muted);font-size:.78rem}
+.lab table{width:100%;border-collapse:collapse;font-size:.86rem}
+.lab th{text-align:left;color:var(--muted);font-weight:600;font-size:.7rem;text-transform:uppercase;padding:6px;border-bottom:1px solid var(--line)}
+.lab td{padding:7px 6px;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
+.lab th.num,.lab td.num{text-align:right}
+.flag{font-size:.74rem;padding:1px 7px;border-radius:999px;font-weight:600}
+.flag.lo{background:var(--warn-bg);color:var(--warn)}.flag.hi{background:var(--crit-bg);color:var(--crit)}.flag.ok{background:var(--ok-bg);color:var(--ok)}
+.stale{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:9px 12px;
+  margin-bottom:11px;color:var(--ink-2);font-size:.84rem}
+.ogrid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+.ogrid .k{font-size:.78rem;font-weight:650;color:var(--ink-2);margin-bottom:4px}
+.orow{display:flex;justify-content:space-between;gap:10px;font-size:.85rem;padding:3px 0;border-bottom:1px solid var(--grid)}
+.orow b{font-variant-numeric:tabular-nums;font-weight:600}
+.btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:9px;
+  padding:8px 15px;font:inherit;font-size:.86rem;font-weight:600;cursor:pointer}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.brief{background:linear-gradient(180deg,var(--surface),var(--surface-2));border:1px solid var(--brand);
+  border-radius:14px;padding:17px 19px;box-shadow:var(--shadow)}
+.brief pre{white-space:pre-wrap;font:inherit;margin:10px 0 0}
+.hint{color:var(--muted);font-size:.82rem}
+@media (max-width:720px){.tiles{grid-template-columns:repeat(2,1fr)}.charts{grid-template-columns:1fr}
+  .grid2{grid-template-columns:1fr}.ogrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="brand">Мой прогресс</h1>
+    <div class="sub" id="sub"></div>
+  </header>
+  <div id="view"><p class="hint">Загружаю…</p></div>
+</div>
+<script>
+"use strict";
+const $=(id)=>document.getElementById(id);
+const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=(n)=>(n??0).toLocaleString("ru-RU");
+const rub=(n)=>String(n).replace(".",",");
+const cssv=(n)=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const plural=(n,a,b,c)=>{const m=n%100,k=n%10;return (m>=11&&m<=14)?c:(k===1?a:(k>=2&&k<=4?b:c));};
+const KEY=new URLSearchParams(location.search).get("key")||"";
+
+const PERIODS=[{key:"1",btn:"Сегодня",cap:"за сегодня"},{key:"7",btn:"Неделя",cap:"за неделю"},
+  {key:"30",btn:"Месяц",cap:"за месяц"},{key:"365",btn:"Год",cap:"за год"},
+  {key:"all",btn:"Всё",cap:"за всё время"}];
+let period="7";
+const curPeriod=()=>PERIODS.find(p=>p.key===period)||PERIODS[1];
+
+function lineSvg(vals,max,colorVar){
+  const w=200,h=50,pad=6;const xs=i=>pad+i*(w-2*pad)/Math.max(1,vals.length-1),ys=v=>h-pad-(v/max)*(h-2*pad);
+  let d="",started=false;vals.forEach((v,i)=>{if(v==null){started=false;return;}
+    d+=(started?" L":"M")+xs(i).toFixed(1)+" "+ys(v).toFixed(1);started=true;});
+  const col=cssv(colorVar);
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${d?`<path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`:""}</svg>`;
+}
+function barsSvg(vals,max,target,colorVar){
+  const w=200,h=50,pad=6,n=Math.max(1,vals.length),bw=Math.min(16,(w-2*pad)/n-3);const col=cssv(colorVar);
+  let bars="";vals.forEach((v,i)=>{const bh=(v/max)*(h-2*pad);const x=pad+i*((w-2*pad)/n)+((w-2*pad)/n-bw)/2;
+    if(v>0)bars+=`<rect x="${x.toFixed(1)}" y="${(h-pad-bh).toFixed(1)}" width="${Math.max(2,bw).toFixed(1)}" height="${bh.toFixed(1)}" rx="2.5" fill="${col}"/>`;});
+  let tl="";if(target){const ty=h-pad-(target/max)*(h-2*pad);
+    tl=`<line x1="${pad}" x2="${w-pad}" y1="${ty.toFixed(1)}" y2="${ty.toFixed(1)}" stroke="${cssv('--baseline')}" stroke-width="1" stroke-dasharray="4 3"/>`;}
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${bars}${tl}</svg>`;
+}
+function niceMax(m){const st=[100,200,250,500,1000,2000,2500,5000];for(const s of st){if(Math.ceil(m/s)<=5)return Math.ceil(m/s)*s;}return Math.ceil(m/5000)*5000;}
+const tile=(cls,lbl,val,d)=>`<div class="tile ${cls||''}"><div class="lbl">${lbl}</div><div class="val">${val}</div>${d?`<div class="d">${d}</div>`:""}</div>`;
+const emptyTile=(lbl,txt)=>`<div class="tile empty"><div class="lbl">${lbl}</div><div class="val">${txt}</div></div>`;
+const scoreCls=(v)=>v==null?"":(v>=8?"ok":(v>=5.5?"warn":"crit"));
+
+async function load(){
+  const p=curPeriod();
+  try{
+    const s=await (await fetch(`/me/api/summary?key=${encodeURIComponent(KEY)}&days=${p.key}`)).json();
+    if(!s.ok){$("view").innerHTML=`<div class="nodata">Пока нечего показать — начни вести дневник в чате 🙂</div>`;return;}
+    render(s,p);
+  }catch(e){$("view").innerHTML=`<p class="hint">⚠️ Не удалось загрузить — попробуй обновить страницу</p>`;}
+}
+
+function segHtml(){
+  return `<div class="seg" id="seg">${PERIODS.map(p=>
+    `<button data-k="${p.key}" class="${p.key===period?"on":""}">${p.btn}</button>`).join("")}</div>`;
+}
+function wireSeg(){
+  const seg=$("seg");if(!seg)return;
+  seg.querySelectorAll("button").forEach(b=>b.addEventListener("click",async()=>{
+    if(b.dataset.k===period)return;
+    period=b.dataset.k;
+    seg.querySelectorAll("button").forEach(x=>{x.classList.toggle("on",x.dataset.k===period);x.disabled=true;});
+    await load();
+  }));
+}
+
+function render(s,p){
+  const t=s.today,tg=s.targets,st=s.stats,cap=p.cap,isDay=(s.days||7)<=1;
+  $("brand").textContent=s.brand||"Мой прогресс";
+  $("sub").textContent=(s.coach_name?`ассистент тренера ${s.coach_name}`:"твой дневник")
+    +(s.last_activity_label?` · последняя запись ${s.last_activity_label}`:"");
+
+  const avgOf=(k)=>{const v=s.series.map(x=>x[k]).filter(x=>x!=null&&x>0);
+    return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):0;};
+  const kcalVal=isDay?t.kcal:st.avg_kcal, waterVal=isDay?t.water:avgOf("water");
+
+  const tiles=[
+    tile(tg.kcal&&kcalVal&&(kcalVal<0.7*tg.kcal||kcalVal>1.15*tg.kcal)?"warn":"",
+      isDay?"🔥 Ккал сегодня":`🔥 Ккал ср. ${cap}`,
+      `${fmt(kcalVal)}${tg.kcal?` <small>/ ${fmt(tg.kcal)}</small>`:""}`,
+      tg.kcal?"":"норма не задана"),
+    tile("",`🍽 Чек ${cap}`,st.avg_chek!=null?`${rub(st.avg_chek)}<small>/10</small>`:"—","качество еды"),
+    tile("",isDay?"💧 Вода сегодня":`💧 Вода ср. ${cap}`,
+      `${fmt(waterVal)} <small>/ ${fmt(tg.water)}</small>`,waterVal>=tg.water?"норма":"мл"),
+  ];
+  if(s.oura&&s.oura.latest){const a=s.oura.avg||{},o=s.oura.latest;
+    const rd=isDay?o.readiness:a.readiness;
+    tiles.push(tile(rd!=null&&rd<70?"warn":"","💍 Готовность",`${rd??"—"}`,isDay?"с кольца":cap));
+  }else tiles.push(emptyTile("💍 Готовность","Данных нет"));
+
+  let dyn;
+  if(isDay){
+    dyn=`<div class="row">🍽 приёмов ${fmt(t.meals)} · 🔥 ${fmt(t.kcal)} ккал · 💧 ${fmt(t.water)} мл
+      · 🏋️ ${t.workout==="done"?"тренировка ✅":(t.workout==="skipped"?"отдых":"—")}</div>`;
+  }else{
+    const kmax=niceMax(Math.max(tg.kcal||0,...s.series.map(x=>x.kcal||0))*1.05);
+    const wmax=niceMax(Math.max(tg.water||0,...s.series.map(x=>x.water||0))*1.05);
+    dyn=`<div class="charts">
+      <div class="chart"><div class="ct">Калории</div><div class="cv">${fmt(st.avg_kcal)}</div>${barsSvg(s.series.map(x=>x.kcal||0),kmax,tg.kcal,'--s3')}</div>
+      <div class="chart"><div class="ct">Чек</div><div class="cv">${st.avg_chek!=null?rub(st.avg_chek):"—"}</div>${lineSvg(s.series.map(x=>x.chek),10,'--brand')}</div>
+      <div class="chart"><div class="ct">Вода</div><div class="cv">${fmt(avgOf("water"))}</div>${barsSvg(s.series.map(x=>x.water||0),wmax,tg.water,'--s1')}</div>
+    </div>`;
+  }
+
+  // что ел
+  const fd=s.food;
+  const food=(fd&&fd.days&&fd.days.length)
+    ? fd.days.slice(0,7).map(d=>`<div style="margin-bottom:8px"><b>${d.label}</b>
+        <span class="tm">${fmt(d.kcal)} ккал${d.chek!=null?` · Чек ${rub(d.chek)}`:""}</span>
+        ${d.meals.map(m=>`<div class="row"><span class="tm" style="margin:0;width:42px">${esc(m.time||"")}</span>
+          <span>${esc(m.dish||"Приём пищи")}</span>
+          <span class="tm">${fmt(Math.round(m.kcal||0))} ккал</span></div>`).join("")}</div>`).join("")
+    : `<div class="nodata">Данных нет — ещё ничего не записано ${cap}</div>`;
+
+  // тренировки
+  const wo=s.workouts;
+  const workouts=(wo&&wo.list.length)
+    ? wo.list.map(w=>{const done=w.status==="done";
+        const day=new Date(w.date+"T00:00:00").toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"});
+        return `<div class="row"><span class="box ${done?'on':'off'}">${done?'✓':'—'}</span>
+          <span>${day}${done&&w.time?" · "+esc(w.time):""}${w.duration_min?` · ${w.duration_min} мин`:""}${w.kcal_burned?` · ${w.kcal_source==="oura"?"":"≈"}${fmt(w.kcal_burned)} ккал`:""}${w.description?" · "+esc(w.description):""}</span></div>`;
+      }).join("")
+    : `<div class="nodata">Данных нет — тренировки не записаны ${cap}</div>`;
+
+  // самочувствие
+  let wb;
+  if(s.wellbeing){const a=s.wellbeing.avg;
+    const row=(l,v,c)=>v==null?"":`<div class="wb-row"><span>${l}</span><span class="bar"><i style="width:${v*10}%;background:${c}"></i></span><span>${rub(v)}</span></div>`;
+    wb=`<div class="wb">${row("⚡️ Энергия",a.energy,cssv('--warn'))}${row("🙂 Настроение",a.mood,cssv('--s1'))}${row("😤 Стресс",a.stress,cssv('--crit'))}</div>`;
+  }else wb=`<div class="nodata">Данных нет</div>`;
+
+  // БАДы
+  const sp=s.supplements;
+  const supp=sp?`<div>${sp.list.map(x=>{
+      const pct=x.planned>0?Math.min(100,Math.round(x.taken/x.planned*100)):0;
+      return `<div class="row"><span class="box ${x.today_taken?'on':'off'}">${x.today_taken?'✓':''}</span>
+        <span>${esc(x.name)}</span><span class="tm">${x.taken} из ${x.planned}</span></div>
+        <span class="bar" style="margin-bottom:7px"><i style="width:${pct}%;background:${pct>=80?cssv('--ok'):cssv('--warn')}"></i></span>`;
+    }).join("")}</div>`:`<div class="nodata">Данных нет</div>`;
+
+  // анализы
+  let labs;
+  if(s.labs){
+    const stale=s.labs.in_window===false;
+    labs=(stale?`<div class="stale">🗓 За период новых анализов не было — показываю последний, от ${s.labs.last_date}</div>`:"")
+      +`<div class="lab" style="overflow-x:auto"><table><thead><tr><th>Показатель</th><th class="num">Значение</th><th>Норма</th><th>Статус</th></tr></thead><tbody>`
+      +s.labs.markers.map(m=>{
+        const val=m.value_text||(m.value!=null?rub(m.value):"?");
+        const ref=(m.ref_low!=null||m.ref_high!=null)?`${m.ref_low!=null?rub(m.ref_low):""}–${m.ref_high!=null?rub(m.ref_high):""}`:"—";
+        const fl=m.flag==="низко"?`<span class="flag lo">🔽 низко</span>`:m.flag==="высоко"?`<span class="flag hi">🔼 высоко</span>`:`<span class="flag ok">✅ норма</span>`;
+        return `<tr><td>${esc(m.name)}</td><td class="num">${val} ${esc(m.unit||"")}</td><td>${ref}</td><td>${fl}</td></tr>`;
+      }).join("")+`</tbody></table></div>`;
+  }else labs=`<div class="nodata">Данных нет — анализы не загружены</div>`;
+
+  // кольцо
+  let oura;
+  if(s.oura){const a=s.oura.avg||{},L=s.oura.latest||{};
+    const val=(v,u,d)=>v==null?null:`${d?rub(v):fmt(Math.round(v))}${u||""}`;
+    const group=(title,rows)=>{const got=rows.filter(r=>r[1]!=null);
+      return `<div><div class="k">${title}</div>${got.length?got.map(r=>`<div class="orow"><span>${r[0]}</span><b>${r[1]}</b></div>`).join("")
+        :`<div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div>`}</div>`;};
+    oura=`<div class="ogrid">
+      ${group("😴 Сон",[["Длительность",val(a.sleep_h," ч",1)],["Эффективность",val(a.sleep_efficiency,"%")],
+        ["Глубокий",val(a.deep_h," ч",1)],["REM",val(a.rem_h," ч",1)]])}
+      ${group("❤️ Показатели",[["HRV",val(a.hrv," мс")],["Пульс покоя",val(a.resting_hr," уд/мин")],
+        ["Дыхание",val(a.breath_avg,"/мин",1)],["SpO₂",val(a.spo2_avg,"%",1)]])}
+      ${group("🏃 Активность",[["Готовность",val(a.readiness,"")],["Шаги",val(a.steps,"")],
+        ["Активные ккал",val(a.active_kcal,"")],["Минут активности",val(a.active_min,"")]])}
+      ${group("🧠 Стресс и форма",[["Стресс, высокий",val(a.stress_high_min," мин")],
+        ["Итог дня",L.stress_summary?esc(L.stress_summary):null],
+        ["VO₂max",val(a.vo2_max,"",1)],["Кардио-возраст",val(a.cardio_age," лет")]])}
+    </div>`;
+  }else oura=`<div class="nodata">Данных нет — кольцо не подключено</div>`;
+
+  $("view").innerHTML=`
+    ${segHtml()}
+    <div class="tiles">${tiles.join("")}</div>
+    <div class="card"><h3>${isDay?"Сегодня":"Динамика "+cap}</h3><p class="cap">${isDay?"Как идёт день":"По дням"}</p>${dyn}</div>
+    <div class="card"><h3>🍽 Что ел</h3><p class="cap">По дням, свежие сверху</p>${food}</div>
+    <div class="card"><h3>🏋️ Тренировки ${wo?`<span class="src">${wo.done} ${plural(wo.done,"тренировка","тренировки","тренировок")}</span>`:""}</h3>
+      <p class="cap">Что записано ${cap}</p>${workouts}</div>
+    <div class="grid2">
+      <div class="card"><h3>😌 Самочувствие</h3><p class="cap">${isDay?"За сегодня":"Средние "+cap}</p>${wb}</div>
+      <div class="card"><h3>💊 БАДы</h3><p class="cap">Выполнение плана ${cap}</p>${supp}</div>
+    </div>
+    <div class="card"><h3>🩸 Анализы</h3><p class="cap">Показатели и норма</p>${labs}</div>
+    <div class="card"><h3>💍 Кольцо Oura</h3><p class="cap">Сон, активность и показатели ${cap}</p>${oura}</div>
+    <div class="brief">
+      <div><b>🧠 Разбор недели</b></div>
+      <p class="cap">Соберу твою неделю в понятный текст (30–60 сек)</p>
+      <button class="btn primary" id="briefbtn">Собрать разбор</button>
+      <div id="briefbox"></div>
+    </div>`;
+  wireSeg();
+  $("briefbtn").addEventListener("click",makeBrief);
+}
+
+async function makeBrief(){
+  const btn=$("briefbtn"),box=$("briefbox");
+  btn.disabled=true;btn.textContent="Думаю…";
+  try{
+    const data=await (await fetch(`/me/api/brief?key=${encodeURIComponent(KEY)}`,{method:"POST"})).json();
+    box.innerHTML=data.brief?`<pre>${esc(data.brief)}</pre>`:`<pre>⚠️ ${esc(data.error||"не получилось")}</pre>`;
+  }catch(e){box.innerHTML=`<pre>⚠️ Ошибка сети — попробуй ещё раз</pre>`;}
+  btn.disabled=false;btn.textContent="Собрать разбор";
+}
+
+load();
+</script>
+</body>
+</html>
