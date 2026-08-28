@@ -2285,6 +2285,51 @@ def test_agent_no_command_style():
     ok("Не повторяй одну и ту же фразу-шаблон" in persona, "подтверждения вариативны")
 
 
+async def _privacy_http():
+    port = free_port()
+    runner = await web_dashboard.start_dashboard(port, host="127.0.0.1")
+    base = f"http://127.0.0.1:{port}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{base}/privacy") as r:
+                body = await r.text()
+                return r.status, body
+    finally:
+        await runner.cleanup()
+
+
+def test_privacy_page():
+    config.DASHBOARD_TOKEN = "owner-test-key"
+    status, body = asyncio.run(_privacy_http())
+    eq(status, 200, "/privacy открывается без ключа")
+    ok("Политика конфиденциальности" in body, "это страница политики")
+    ok("Health Assistant" in body, "сервис назван нейтрально")
+    ok("Чек" not in body, "название платформы на публичной странице не светится")
+    for word in ("Oura", "WHOOP", "OAuth", "не медицинское изделие",
+                 "[контактный e-mail]", "удалить"):
+        ok(word in body, f"в политике есть про «{word}»")
+    ok("HTTPS" in body, "сказано про защищённое соединение")
+
+    # Защищённые маршруты не задеты
+    status, _ = asyncio.run(_me_http_status("/me"))
+    eq(status, 401, "личная страничка по-прежнему под ключом")
+    status, _ = asyncio.run(_me_http_status("/coach"))
+    eq(status, 401, "кабинет тренера по-прежнему под ключом")
+    status, _ = asyncio.run(_me_http_status("/"))
+    eq(status, 401, "дашборд владельца по-прежнему под ключом")
+
+
+async def _me_http_status(path: str):
+    port = free_port()
+    runner = await web_dashboard.start_dashboard(port, host="127.0.0.1")
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"http://127.0.0.1:{port}{path}") as r:
+                return r.status, await r.text()
+    finally:
+        await runner.cleanup()
+
+
 def test_client_cabinet_token():
     uid = 7040
     db.ensure_user(uid, "Кабинет")
@@ -2607,6 +2652,8 @@ def main() -> int:
     test_agent_read_tools()
     print("- v2: командного стиля не осталось")
     test_agent_no_command_style()
+    print("- страница политики конфиденциальности")
+    test_privacy_page()
     print("- кабинет клиента: ключи доступа")
     test_client_cabinet_token()
     print("- кабинет клиента: HTTP и изоляция данных")

@@ -15,6 +15,7 @@ import nutrition
 DASHBOARD_FILE = Path(__file__).parent / "dashboard.html"
 COACH_FILE = Path(__file__).parent / "coach.html"
 CLIENT_FILE = Path(__file__).parent / "client.html"
+PRIVACY_FILE = Path(__file__).parent / "privacy.html"
 
 
 def _owner_uid() -> int | None:
@@ -103,6 +104,8 @@ async def _auth_middleware(request: web.Request, handler):
     """Владелец — по DASHBOARD_TOKEN; кабинет тренера (/coach*) — по ключу кабинета."""
     if request.path.startswith("/oura/"):
         return await handler(request)  # OAuth-callback защищён параметром state
+    if request.path == "/privacy":
+        return await handler(request)  # публичная страница, ключ не нужен
     if request.path.startswith("/me"):
         supplied = request.query.get("key") or request.cookies.get("chek_me")
         me = db.user_by_cabinet_token(supplied or "")
@@ -541,6 +544,11 @@ def week_data_text(uid: int) -> str:
     return "\n".join(lines)
 
 
+async def _privacy(request: web.Request) -> web.StreamResponse:
+    """Политика конфиденциальности — открыта всем, без ключа."""
+    return web.FileResponse(PRIVACY_FILE, headers={"Cache-Control": "public, max-age=3600"})
+
+
 async def _me_index(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(CLIENT_FILE, headers={"Cache-Control": "no-store"})
 
@@ -661,6 +669,7 @@ async def start_dashboard(port: int, host: str | None = None) -> web.AppRunner:
     app = web.Application(middlewares=[_auth_middleware])
     app.router.add_get("/", _index)
     app.router.add_get("/api/summary", _api_summary)
+    app.router.add_get("/privacy", _privacy)
     app.router.add_get("/me", _me_index)
     app.router.add_get("/me/api/summary", _me_api_summary)
     app.router.add_post("/me/api/brief", _me_api_brief)
