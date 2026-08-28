@@ -234,6 +234,7 @@ footer a{color:var(--mut)}
         <div class="card" id="sleepCard"></div>
         <div class="card" id="weightCard"></div>
         <div class="card" id="suppCard"></div>
+        <div class="card" id="remCard"></div>
         <div class="card" id="labCard"></div>
       </div>
     </div>
@@ -297,6 +298,10 @@ function mockDetail(uid){
       {name:"Омега-3",timing:"с едой",plan:7,dots:[1,1,0,0,1,1,0]},
       {name:"Магний",timing:"на ночь",plan:7,dots:[0,1,0,0,1,0,0]},
     ],
+    reminders:[
+      {kind:"water",text:"попить воды",when:"каждые 2 ч, 09:00–21:00"},
+      {kind:"supplement",text:"магний",when:"ежедневно в 22:00"},
+      {kind:"workout",text:"тренировка",when:"пн·ср·пт в 18:00"}],
     labs:{last_date:"10.08",total:14,markers:[
       {name:"Ферритин",value:"18 нг/мл",ref:"30–150",flag:"низко",trend:"↓ было 24"},
       {name:"Витамин D",value:"19 нг/мл",ref:"30–100",flag:"низко",trend:"↑ было 16"},
@@ -526,6 +531,17 @@ function renderDetail(){
           <span class="sdots">${s.dots.map(x=>`<i class="${x?'on':''}"></i>`).join("")}</span>
           <span class="sc">${taken} из ${s.plan}</span></div>`;}).join("")}</div>`;
   } else $("suppCard").innerHTML=`<h2>БАДы</h2><div class="nodata">Данных нет</div>`;
+
+  /* напоминания */
+  if(!D.reminders || !D.reminders.length){
+    $("remCard").innerHTML = `<h2>Напоминания</h2>
+      <div class="nodata">Напоминаний нет — клиент задаёт их словами в боте.</div>`;
+  } else
+  $("remCard").innerHTML = `<h2>Напоминания</h2>
+    <div class="supp">
+    ${D.reminders.map(r=>`<div class="srow"><span class="nm">${r.text}</span>
+      <span class="sc">${r.when}</span></div>`).join("")}
+    </div>`;
 
   if(D.labs&&D.labs.markers&&D.labs.markers.length){
     const abn=D.labs.markers.filter(m=>m.flag!=="норма");

@@ -200,6 +200,21 @@ CREATE TABLE IF NOT EXISTS whoop_workouts (
 );
 CREATE INDEX IF NOT EXISTS idx_whoop_wo_user_day ON whoop_workouts(user_id, day);
 
+CREATE TABLE IF NOT EXISTS reminders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    kind       TEXT NOT NULL,      -- water | supplement | workout | custom
+    text       TEXT NOT NULL,      -- о чём напомнить, короткой фразой
+    time       TEXT,               -- ЧЧ:ММ, если напоминание в конкретное время
+    every_min  INTEGER,            -- либо интервал в минутах
+    win_from   TEXT,               -- окно для интервального: ЧЧ:ММ
+    win_to     TEXT,
+    dow_mask   INTEGER,            -- биты Пн..Вс; NULL = каждый день
+    enabled    INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id, enabled);
+
 CREATE TABLE IF NOT EXISTS chat_history (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -258,6 +273,7 @@ _USER_COLUMNS = {
     "coach_id": "INTEGER",           # NULL = личный бот владельца
     "consent": "INTEGER DEFAULT 0",  # согласие клиента на доступ тренера
     "cabinet_token": "TEXT",         # ключ к личной страничке клиента (/me)
+    "tz": "TEXT",                    # задел на будущее: пока всё по времени сервера
 }
 
 # Новые колонки supplements. План приёма задаёт сам клиент:
@@ -1039,6 +1055,98 @@ def whoop_workouts_range(user_id: int, dates: list[str]) -> list[dict]:
             f"ORDER BY day DESC, start_dt DESC", (user_id, *dates),
         ).fetchall()
     return _whoop_workout_rows(rows)
+
+
+# ---------- напоминания ----------
+
+_REMINDER_FIELDS = ("kind", "text", "time", "every_min", "win_from", "win_to",
+                    "dow_mask", "enabled")
+
+
+def add_reminder(user_id: int, kind: str, text: str, time: str | None = None,
+                 every_min: int | None = None, win_from: str | None = None,
+                 win_to: str | None = None, dow_mask: int | None = None) -> int:
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO reminders(user_id, kind, text, time, every_min, win_from, "
+            "win_to, dow_mask) VALUES(?,?,?,?,?,?,?,?)",
+            (user_id, kind, (text or "").strip()[:200], time, every_min,
+             win_from, win_to, dow_mask),
+        )
+        return cur.lastrowid
+
+
+def list_reminders(user_id: int, only_enabled: bool = True) -> list[dict]:
+    q = "SELECT * FROM reminders WHERE user_id = ?"
+    if only_enabled:
+        q += " AND enabled = 1"
+    q += " ORDER BY COALESCE(time, win_from, ''), id"
+    with _conn() as c:
+        return [dict(r) for r in c.execute(q, (user_id,)).fetchall()]
+
+
+def get_reminder(reminder_id: int) -> dict | None:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def update_reminder(reminder_id: int, **fields) -> None:
+    fields = {k: v for k, v in fields.items() if k in _REMINDER_FIELDS}
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with _conn() as c:
+        c.execute(f"UPDATE reminders SET {cols} WHERE id = ?",
+                  (*fields.values(), reminder_id))
+
+
+def disable_reminder(reminder_id: int) -> None:
+    """Выключаем, а не удаляем: клиент может попросить вернуть."""
+    update_reminder(reminder_id, enabled=0)
+
+
+def all_reminders() -> list[dict]:
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM reminders WHERE enabled = 1").fetchall()]
+
+
+def _hhmm_to_min(value: str | None) -> int | None:
+    try:
+        h, m = str(value).split(":")
+        return int(h) * 60 + int(m)
+    except (AttributeError, ValueError):
+        return None
+
+
+def reminder_due(rem: dict, now) -> bool:
+    """Пора ли слать это напоминание в указанную минуту."""
+    if not rem.get("enabled"):
+        return False
+    mask = rem.get("dow_mask")
+    if mask is not None and not (int(mask) >> now.weekday()) & 1:
+        return False
+
+    minute_now = now.hour * 60 + now.minute
+    if rem.get("time"):
+        return _hhmm_to_min(rem["time"]) == minute_now
+
+    every = rem.get("every_min")
+    if not every:
+        return False
+    start = _hhmm_to_min(rem.get("win_from")) or 0
+    end = _hhmm_to_min(rem.get("win_to"))
+    if end is None:
+        end = 24 * 60 - 1
+    if not start <= minute_now <= end:
+        return False
+    return (minute_now - start) % int(every) == 0
+
+
+def due_reminders(now) -> list[dict]:
+    """Все напоминания, которые пора отправить в эту минуту."""
+    return [r for r in all_reminders() if reminder_due(r, now)]
 
 
 # ---------- вода ----------

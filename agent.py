@@ -7,6 +7,7 @@
 Слой данных не меняется — инструменты здесь тонкие обёртки над db/analyzer.
 """
 import json
+import re
 import logging
 import secrets
 from datetime import datetime, timedelta
@@ -69,6 +70,9 @@ PERSONA = """Ты — ассистент тренера {coach}. Работае�
 
 ГАДЖЕТЫ
 Если к слову зайдёт разговор про носимые устройства — спроси, есть ли у человека кольцо Oura или браслет WHOOP, и предложи подключить: инструменты get_oura_link и get_whoop_link дадут ссылку. Если подключение недоступно, скажи об этом честно и не обещай.
+
+НАПОМИНАНИЯ
+Если человек просит о чём-то напоминать — заведи напоминание инструментом set_reminder, разобрав время, дни и интервал из его фразы. Просит перестать — delete_reminder. Подтверждай по-человечески: «буду напоминать про магний в 22:00 🙂». Добавив добавку с указанным временем приёма, можешь предложить напоминание — но предложи, а не ставь молча.
 
 ЖИВАЯ РЕЧЬ
 Не повторяй одну и ту же фразу-шаблон. Подтверждай по-разному и коротко: «ага, записал», \
@@ -279,6 +283,36 @@ TOOLS = [
                      "самочувствие, анализы, разбор недели. Давай, когда человек хочет "
                      "посмотреть свои цифры, прогресс или графики."),
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "set_reminder",
+     "description": ("Создать напоминание. kind: water, supplement, workout или custom. "
+                     "text — о чём напомнить, коротко. Либо time (ЧЧ:ММ), либо "
+                     "every_min с окном win_from/win_to (например «каждые 2 часа с 9 до 21»). "
+                     "days — дни недели списком: пн, вт, ср, чт, пт, сб, вс; пусто = каждый день."),
+     "input_schema": {"type": "object", "properties": {
+         "kind": {"type": "string", "enum": ["water", "supplement", "workout", "custom"]},
+         "text": {"type": "string"},
+         "time": {"type": "string"},
+         "every_min": {"type": "integer"},
+         "win_from": {"type": "string"},
+         "win_to": {"type": "string"},
+         "days": {"type": "array", "items": {"type": "string"}}},
+         "required": ["kind", "text"]}},
+    {"name": "list_reminders",
+     "description": "Какие напоминания у человека сейчас настроены.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "update_reminder",
+     "description": ("Изменить напоминание. Найди его по id из list_reminders или по "
+                     "описанию (что напоминаем). Меняй только названные поля."),
+     "input_schema": {"type": "object", "properties": {
+         "id": {"type": "integer"}, "match": {"type": "string"},
+         "text": {"type": "string"}, "time": {"type": "string"},
+         "every_min": {"type": "integer"}, "win_from": {"type": "string"},
+         "win_to": {"type": "string"}, "days": {"type": "array", "items": {"type": "string"}}}}},
+    {"name": "delete_reminder",
+     "description": ("Выключить напоминание: «про воду больше не напоминай». Ищи по id "
+                     "или по описанию."),
+     "input_schema": {"type": "object", "properties": {
+         "id": {"type": "integer"}, "match": {"type": "string"}}}},
     {"name": "get_whoop_link",
      "description": ("Ссылка для подключения браслета WHOOP. Давай, когда человек говорит, "
                      "что у него WHOOP, или просит подключить браслет."),
@@ -614,7 +648,114 @@ async def _tool_get_whoop_link(uid: int, args: dict) -> dict:
     return {"ok": True, "url": whoop_mod.authorize_url(state)}
 
 
+_DOW_KEYS = {"пн": 0, "вт": 1, "ср": 2, "чт": 3, "пт": 4, "сб": 5, "вс": 6}
+
+
+def _dow_mask(days) -> int | None:
+    """Список дней недели в битовую маску. Пусто или все семь — ежедневно."""
+    if not days:
+        return None
+    bits = 0
+    for item in days:
+        key = str(item).strip().lower()[:2]
+        if key in _DOW_KEYS:
+            bits |= 1 << _DOW_KEYS[key]
+    return bits or None
+
+
+KIND_WORDS = {"water": "вода пить", "supplement": "бад добавка витамины",
+              "workout": "тренировка зал", "evening": "вечер итоги дня",
+              "custom": ""}
+
+
+def _stems(text: str) -> set[str]:
+    """Грубая нормализация: «воду», «воды», «вода» — одно и то же слово.
+
+    Падежи режем отбрасыванием хвоста, этого хватает: ищем среди своих же
+    формулировок, а не по всему языку.
+    """
+    out = set()
+    for word in re.findall(r"[\w-]+", (text or "").lower()):
+        out.add(word[:max(3, len(word) - 2)])
+    return out
+
+
+def _find_reminder(uid: int, args: dict) -> dict | None:
+    """Напоминание по id или по описанию: «про воду больше не напоминай»."""
+    if args.get("id"):
+        rem = db.get_reminder(int(args["id"]))
+        if rem and rem["user_id"] == uid:
+            return rem
+    items = db.list_reminders(uid)
+    match = _stems(args.get("match") or "")
+    if match:
+        for rem in items:
+            hay = _stems(f"{rem['text']} {KIND_WORDS.get(rem['kind'], '')}")
+            if match & hay:
+                return rem
+        return None
+    return items[0] if len(items) == 1 else None
+
+
+async def _tool_set_reminder(uid: int, args: dict) -> dict:
+    time_ = (args.get("time") or "").strip() or None
+    every = int(args.get("every_min") or 0) or None
+    if not time_ and not every:
+        return {"ok": False, "error": "не понял, когда напоминать"}
+    rid = db.add_reminder(
+        uid, args.get("kind") or "custom", args.get("text") or "",
+        time=time_, every_min=every,
+        win_from=(args.get("win_from") or "").strip() or ("09:00" if every else None),
+        win_to=(args.get("win_to") or "").strip() or ("21:00" if every else None),
+        dow_mask=_dow_mask(args.get("days")))
+    import cabinet
+    return {"ok": True, "id": rid, "when": cabinet.reminder_when(db.get_reminder(rid))}
+
+
+async def _tool_list_reminders(uid: int, args: dict) -> dict:
+    import cabinet
+    items = db.list_reminders(uid)
+    return {"ok": True, "any": bool(items), "items": [
+        {"id": r["id"], "kind": r["kind"], "text": r["text"],
+         "when": cabinet.reminder_when(r)} for r in items]}
+
+
+async def _tool_update_reminder(uid: int, args: dict) -> dict:
+    import cabinet
+    rem = _find_reminder(uid, args)
+    if not rem:
+        return {"ok": False, "error": "не нашёл такое напоминание"}
+    fields = {}
+    for key in ("text", "time", "win_from", "win_to"):
+        if args.get(key):
+            fields[key] = str(args[key]).strip()
+    if args.get("every_min"):
+        fields["every_min"] = int(args["every_min"])
+        fields["time"] = None
+    if args.get("time"):
+        fields["every_min"] = None
+    if args.get("days") is not None:
+        fields["dow_mask"] = _dow_mask(args.get("days"))
+    if not fields:
+        return {"ok": False, "error": "нечего менять"}
+    db.update_reminder(rem["id"], **fields)
+    return {"ok": True, "id": rem["id"],
+            "when": cabinet.reminder_when(db.get_reminder(rem["id"]))}
+
+
+async def _tool_delete_reminder(uid: int, args: dict) -> dict:
+    rem = _find_reminder(uid, args)
+    if not rem:
+        return {"ok": False, "error": "не нашёл такое напоминание"}
+    db.disable_reminder(rem["id"])
+    return {"ok": True, "text": rem["text"]}
+
+
 TOOL_IMPL = {
+    "set_reminder": _tool_set_reminder,
+    "list_reminders": _tool_list_reminders,
+    "update_reminder": _tool_update_reminder,
+    "delete_reminder": _tool_delete_reminder,
     "get_whoop_link": _tool_get_whoop_link,
     "get_my_dashboard_link": _tool_get_my_dashboard_link,
     "get_schedule": _tool_get_schedule,

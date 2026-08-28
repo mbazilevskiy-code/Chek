@@ -211,6 +211,10 @@ def payload(uid: int, days: int = 30) -> dict:
             for x in detail["supplements"]["list"]
         ]
 
+    rem = reminders_block(uid)
+    if rem:
+        out["reminders"] = rem
+
     labs = labs_block(uid)
     if labs:
         out["labs"] = labs
@@ -251,3 +255,33 @@ def coach_client_payload(uid: int, days: int = 30) -> dict:
     notes = db.trainer_notes_range(uid, [row["date"] for row in out["series"]])
     out["notes"] = [{"date": when_word(n["date"]), "text": n["text"]} for n in notes[:10]]
     return out
+
+
+DOW_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+def reminder_when(rem: dict) -> str:
+    """Расписание напоминания человеческой строкой для кабинета."""
+    days = "ежедневно"
+    mask = rem.get("dow_mask")
+    if mask is not None:
+        picked = [DOW_SHORT[i] for i in range(7) if (int(mask) >> i) & 1]
+        if picked and len(picked) < 7:
+            days = "·".join(picked)
+    if rem.get("time"):
+        return f"{days} в {rem['time']}" if days == "ежедневно" else f"{days} в {rem['time']}"
+    every = rem.get("every_min")
+    if every:
+        hours = every / 60
+        step = f"каждые {int(hours)} ч" if hours >= 1 and float(hours).is_integer() \
+            else f"каждые {every} мин"
+        window = ""
+        if rem.get("win_from") and rem.get("win_to"):
+            window = f", {rem['win_from']}–{rem['win_to']}"
+        return step + window
+    return days
+
+
+def reminders_block(uid: int) -> list[dict]:
+    return [{"kind": r["kind"], "text": r["text"], "when": reminder_when(r)}
+            for r in db.list_reminders(uid)]

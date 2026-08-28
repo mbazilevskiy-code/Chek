@@ -2346,8 +2346,10 @@ def test_whoop_auth():
         ok(url.startswith("https://api.prod.whoop.com/oauth/oauth2/auth?"),
            "адрес авторизации из документации v2")
         for part in ("client_id=test-client", "state=st4te", "response_type=code",
-                     "offline", "read%3Arecovery", "whoop%2Fcallback"):
+                     "read%3Arecovery", "whoop%2Fcallback"):
             ok(part in url, f"в ссылке есть {part}")
+        # ВРЕМЕННО: offline убран из ссылки — проверяем гипотезу отказа WHOOP.
+        ok("offline" not in url, "offline временно не запрашивается в ссылке")
         ok("api.prod.whoop.com/developer/v2" in whoop.API, "API v2, не v1")
     finally:
         (config.WHOOP_CLIENT_ID, config.WHOOP_CLIENT_SECRET,
@@ -2829,6 +2831,225 @@ def test_agent_v2_texts():
        "у тренера в его чате одна команда")
 
 
+# ------------------------------------------------- напоминания
+
+REM_UID = 7090
+
+
+class _ReminderBot:
+    """Бот, который никуда не ходит: только копит отправленное."""
+
+    def __init__(self, bot_id=1):
+        self.id = bot_id
+        self.sent = []
+
+    async def send_message(self, uid, text, **kw):
+        self.sent.append((uid, text))
+
+
+def test_reminders_agent_tools():
+    import agent as agent_mod
+    import cabinet
+
+    db.ensure_user(REM_UID, "Клиент с напоминаниями")
+
+    reply, client = _run_agent(
+        [_Resp([_ToolUse("set_reminder", {"kind": "supplement", "text": "магний",
+                                          "time": "22:00"})]),
+         _Resp([_Say("Буду напоминать про магний в 22:00 🙂")])],
+        "напоминай про магний в 22:00", uid=REM_UID)
+    ok("22:00" in reply, "подтверждение называет время")
+    rows = db.list_reminders(REM_UID)
+    eq(len(rows), 1, "напоминание завелось одно")
+    eq(rows[0]["kind"], "supplement", "вид — БАД")
+    eq(rows[0]["time"], "22:00", "время сохранено")
+    eq(rows[0]["dow_mask"], None, "без дней недели — значит ежедневно")
+    eq(cabinet.reminder_when(rows[0]), "ежедневно в 22:00", "строка для кабинета")
+
+    # дни недели: «пн/ср/пт в 18:00»
+    _run_agent(
+        [_Resp([_ToolUse("set_reminder", {"kind": "workout", "text": "тренировка",
+                                          "time": "18:00",
+                                          "days": ["пн", "ср", "пт"]})]),
+         _Resp([_Say("Ок 🙂")])],
+        "напоминай про тренировку пн/ср/пт в 18:00", uid=REM_UID)
+    wo = [r for r in db.list_reminders(REM_UID) if r["kind"] == "workout"][0]
+    eq(wo["dow_mask"], 0b0010101, "маска пн·ср·пт")
+    eq(cabinet.reminder_when(wo), "пн·ср·пт в 18:00", "строка с днями недели")
+
+    # интервал с окном
+    _run_agent(
+        [_Resp([_ToolUse("set_reminder", {"kind": "water", "text": "попить воды",
+                                          "every_min": 120, "win_from": "09:00",
+                                          "win_to": "21:00"})]),
+         _Resp([_Say("Договорились 🙂")])],
+        "напоминай пить воду каждые 2 часа с 9 до 21", uid=REM_UID)
+    water = [r for r in db.list_reminders(REM_UID) if r["kind"] == "water"][0]
+    eq(water["every_min"], 120, "интервал два часа")
+    eq(cabinet.reminder_when(water), "каждые 2 ч, 09:00–21:00", "строка интервала")
+
+    res = asyncio.run(agent_mod._tool_list_reminders(REM_UID, {}))
+    eq(len(res["items"]), 3, "инструмент видит все три")
+    ok(all(x["when"] for x in res["items"]), "у каждого готовая строка расписания")
+
+    # правка по смыслу, без id
+    res = asyncio.run(agent_mod._tool_update_reminder(REM_UID, {"match": "магний",
+                                                                "time": "21:30"}))
+    eq(res["ok"], True, "нашли напоминание по описанию")
+    mg = [r for r in db.list_reminders(REM_UID) if r["kind"] == "supplement"][0]
+    eq(mg["time"], "21:30", "время поменялось")
+
+    # «про воду больше не напоминай»
+    res = asyncio.run(agent_mod._tool_delete_reminder(REM_UID, {"match": "воду"}))
+    eq(res["ok"], True, "нашли напоминание про воду")
+    kinds = [r["kind"] for r in db.list_reminders(REM_UID)]
+    ok("water" not in kinds, "про воду больше не напоминаем")
+    off = [r for r in db.list_reminders(REM_UID, only_enabled=False) if r["kind"] == "water"]
+    eq(off[0]["enabled"], 0, "запись не удалена, а выключена — можно вернуть")
+
+    res = asyncio.run(agent_mod._tool_delete_reminder(REM_UID, {"match": "тыквенное масло"}))
+    eq(res["ok"], False, "чего нет — про то честно говорим")
+
+    for name in ("set_reminder", "list_reminders", "update_reminder", "delete_reminder"):
+        ok(any(t["name"] == name for t in agent_mod.TOOLS), f"инструмент {name} объявлен")
+    ok("НАПОМИНАНИЯ" in agent_mod.PERSONA, "персона знает про напоминания")
+
+
+def test_reminder_due():
+    """Когда именно пора слать."""
+    at = lambda hhmm, dow=0: datetime.strptime(  # noqa: E731
+        f"2026-08-{24 + dow:02d} {hhmm}", "%Y-%m-%d %H:%M")
+    eq(at("10:00").weekday(), 0, "опорная дата — понедельник")
+
+    fixed = {"enabled": 1, "time": "22:00", "every_min": None, "dow_mask": None}
+    eq(db.reminder_due(fixed, at("22:00")), True, "ровно в 22:00 — пора")
+    eq(db.reminder_due(fixed, at("22:01")), False, "минутой позже — уже нет")
+    eq(db.reminder_due(dict(fixed, enabled=0), at("22:00")), False, "выключенное молчит")
+
+    days = dict(fixed, time="18:00", dow_mask=0b0010101)
+    eq(db.reminder_due(days, at("18:00", 0)), True, "понедельник — по плану")
+    eq(db.reminder_due(days, at("18:00", 1)), False, "вторник — не по плану")
+    eq(db.reminder_due(days, at("18:00", 2)), True, "среда — по плану")
+
+    water = {"enabled": 1, "time": None, "every_min": 120,
+             "win_from": "09:00", "win_to": "21:00", "dow_mask": None}
+    eq(db.reminder_due(water, at("09:00")), True, "начало окна")
+    eq(db.reminder_due(water, at("10:00")), False, "середина интервала — молчим")
+    eq(db.reminder_due(water, at("11:00")), True, "следующие два часа")
+    eq(db.reminder_due(water, at("08:00")), False, "до окна не шлём")
+    eq(db.reminder_due(water, at("23:00")), False, "после окна не шлём")
+
+    fired = db.due_reminders(at("21:30"))
+    ok(any(r["user_id"] == REM_UID and r["kind"] == "supplement" for r in fired),
+       "due_reminders находит магний в 21:30")
+
+
+def test_reminder_sending():
+    import bot as botmod
+
+    bot = _ReminderBot()
+    user = db.get_user(REM_UID)
+    mg = [r for r in db.list_reminders(REM_UID) if r["kind"] == "supplement"][0]
+
+    asyncio.run(botmod.send_reminder(bot, REM_UID, user, mg, TODAY))
+    eq(len(bot.sent), 1, "напоминание ушло")
+    ok("магний" in bot.sent[0][1], "в тексте — о чём напоминаем")
+    tail = db.chat_tail(REM_UID, 1)
+    ok(tail and "магний" in tail[-1]["content"],
+       "напоминание в истории — ответ «принял» агент поймёт в контексте")
+
+    # умный пропуск: добавка уже отмечена сегодня
+    sid = db.add_supplement(REM_UID, "Магний", "на ночь")
+    db.toggle_supplement_taken(REM_UID, TODAY, sid)
+    bot = _ReminderBot()
+    asyncio.run(botmod.send_reminder(bot, REM_UID, user, mg, TODAY))
+    eq(bot.sent, [], "магний уже принят — не дёргаем")
+
+    # тренировка уже записана
+    wo = [r for r in db.list_reminders(REM_UID) if r["kind"] == "workout"][0]
+    bot = _ReminderBot()
+    asyncio.run(botmod.send_reminder(bot, REM_UID, user, wo, TODAY))
+    eq(len(bot.sent), 1, "про тренировку напомнили")
+    db.add_workout_log(REM_UID, TODAY, "18:30", "done", duration_min=40)
+    bot = _ReminderBot()
+    asyncio.run(botmod.send_reminder(bot, REM_UID, user, wo, TODAY))
+    eq(bot.sent, [], "тренировка записана — напоминание лишнее")
+
+    texts = {botmod._reminder_text(mg) for _ in range(40)}
+    ok(len(texts) > 1, "формулировки варьируются, а не один шаблон")
+
+
+def test_reminder_quiet_and_water():
+    import bot as botmod
+
+    water = {"kind": "water", "text": "попить воды", "every_min": 120,
+             "win_from": "09:00", "win_to": "23:59", "enabled": 1}
+    fixed = {"kind": "custom", "text": "лечь спать", "time": "23:30", "enabled": 1}
+    at = lambda hhmm: datetime.strptime(f"2026-08-24 {hhmm}", "%Y-%m-%d %H:%M")  # noqa: E731
+
+    eq(botmod.reminder_quiet(water, at("23:30")), True, "интервальное ночью молчит")
+    eq(botmod.reminder_quiet(water, at("07:00")), True, "и ранним утром тоже")
+    eq(botmod.reminder_quiet(water, at("12:00")), False, "днём — шлём")
+    eq(botmod.reminder_quiet(fixed, at("23:30")), False,
+       "явно заданное время шлём как просили, тихие часы ему не указ")
+
+    user = db.get_user(REM_UID)
+    target = botmod.water_target_for(user)
+    eq(botmod.reminder_skip(REM_UID, user, water, TODAY), False,
+       "норма не выполнена — напомнить стоит")
+    db.add_water(REM_UID, TODAY, "12:00", target)
+    eq(botmod.reminder_skip(REM_UID, user, water, TODAY), True,
+       "норма выполнена — про воду молчим")
+
+
+def test_reminders_seeded_once():
+    import bot as botmod
+
+    seed_uid = 7091
+    db.ensure_user(seed_uid, "Клиент со старыми напоминаниями")
+    db.update_user(seed_uid, evening_time="21:30")
+    db.set_workout_plan(seed_uid, [(0, "18:00"), (2, "18:00"), (4, "18:00")])
+
+    botmod.seed_reminders(seed_uid, db.get_user(seed_uid))
+    rows = db.list_reminders(seed_uid)
+    kinds = {r["kind"] for r in rows}
+    eq(kinds, {"water", "workout", "evening"}, "старые напоминания стали записями")
+    wo = [r for r in rows if r["kind"] == "workout"][0]
+    eq(wo["dow_mask"], 0b0010101, "план тренировок перенесён днями недели")
+    ev = [r for r in rows if r["kind"] == "evening"][0]
+    eq(ev["time"], "21:30", "вечерняя сводка сохранила своё время")
+
+    db.disable_reminder([r for r in rows if r["kind"] == "water"][0]["id"])
+    botmod.seed_reminders(seed_uid, db.get_user(seed_uid))
+    eq(len(db.list_reminders(seed_uid)), 2, "второй заход ничего не пересоздаёт")
+
+
+def test_reminders_in_cabinet():
+    import cabinet
+
+    p = cabinet.payload(REM_UID, 30)
+    ok("reminders" in p, "напоминания в контракте личного кабинета")
+    ok(all(set(r) == {"kind", "text", "when"} for r in p["reminders"]),
+       "поля ровно как в MOCK: kind, text, when")
+    ok(any(r["when"] == "ежедневно в 21:30" for r in p["reminders"]),
+       "готовая русская строка расписания")
+
+    coach_id = db.get_user(CAB_UID)["coach_id"]
+    db.update_user(REM_UID, coach_id=coach_id, consent=1)
+    c = cabinet.coach_client_payload(REM_UID, 30)
+    ok("reminders" in c, "и в карточке у тренера")
+
+    empty = cabinet.payload(CAB_UID, 30)
+    ok("reminders" not in empty, "без напоминаний раздела нет — страница покажет «Данных нет»")
+
+    for path in ("client.html", "coach.html"):
+        html = open(path, encoding="utf-8").read()
+        ok('id="remCard"' in html, f"{path}: карточка напоминаний есть")
+        ok(html.index('id="remCard"') < html.index('id="labCard"'),
+           f"{path}: напоминания стоят перед анализами")
+        ok("Напоминаний нет" in html, f"{path}: пустое состояние написано словами")
+
+
 # ------------------------------------------------- маршрутизация команд в диалогах
 
 
@@ -3086,6 +3307,18 @@ def main() -> int:
     test_onboarding_mentions_cabinet_once()
     print("- v2: тексты приветствия и справки")
     test_agent_v2_texts()
+    print("- напоминания: инструменты агента")
+    test_reminders_agent_tools()
+    print("- напоминания: когда пора слать")
+    test_reminder_due()
+    print("- напоминания: отправка и умные пропуски")
+    test_reminder_sending()
+    print("- напоминания: тихие часы и выполненная норма воды")
+    test_reminder_quiet_and_water()
+    print("- напоминания: старые переехали в таблицу")
+    test_reminders_seeded_once()
+    print("- напоминания: в контракте кабинетов")
+    test_reminders_in_cabinet()
     print("- bot: /cancel и команды внутри диалогов")
     test_routing()
 

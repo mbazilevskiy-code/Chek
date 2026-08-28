@@ -20,7 +20,11 @@ import db
 AUTHORIZE_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 API = "https://api.prod.whoop.com/developer/v2"
-SCOPES = ("offline read:recovery read:sleep read:cycles read:workout "
+# ВРЕМЕННО: offline убран из ссылки авторизации — проверяем гипотезу, что
+# WHOOP отклоняет запрос именно из-за него. Без offline не придёт
+# refresh_token, поэтому доступ протухнет примерно через час. Вернуть после
+# проверки.
+SCOPES = ("read:recovery read:sleep read:cycles read:workout "
           "read:profile read:body_measurement")
 
 KJ_PER_KCAL = 4.184

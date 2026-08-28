@@ -8,6 +8,7 @@ import html
 import json
 import logging
 import os
+import random
 import re
 import secrets
 import sys
@@ -1615,6 +1616,9 @@ async def cmd_reminders(message: Message) -> None:
         if m:
             t = f"{int(m.group(1)):02d}:{m.group(2)}"
             db.update_user(uid, evening_time=t)
+            for rem in db.list_reminders(uid):
+                if rem["kind"] == "evening":
+                    db.update_reminder(rem["id"], time=t)
             await message.answer(f"🌙 Вечерняя сводка теперь в {t}.")
             return
     user = db.get_user(uid) or {}
@@ -1670,6 +1674,107 @@ async def _whoop_daily_fetch(date: str) -> None:
                 log.exception("WHOOP daily fetch")
 
 
+QUIET_FROM, QUIET_TO = 23 * 60, 8 * 60   # тихие часы для интервальных напоминаний
+
+# Формулировки варьируем: одна и та же фраза в одно и то же время каждый день
+# быстро перестаёт читаться.
+REMINDER_PHRASES = {
+    "water": ["Попей воды 💧", "Стакан воды сейчас — самое то 💧",
+              "Напоминаю про воду 🙂", "Не забывай пить 💧"],
+    "supplement": ["Время принять {text} 🙂", "Напоминаю: {text}",
+                   "Не забудь про {text}", "{text} — самое время"],
+    "workout": ["Сегодня по плану тренировка 🏋️",
+                "Пора размяться 🏋️ Как сделаешь — расскажи, запишу",
+                "Напоминаю про тренировку 🙂",
+                "{text} — по плану на сейчас"],
+    "custom": ["Напоминаю: {text}", "{text} — не забудь 🙂",
+               "Ты просил напомнить: {text}"],
+}
+
+
+def _reminder_text(rem: dict) -> str:
+    variants = REMINDER_PHRASES.get(rem["kind"], REMINDER_PHRASES["custom"])
+    text = (rem.get("text") or "").strip()
+    if not text:
+        variants = [v for v in variants if "{text}" not in v] or ["Напоминаю 🙂"]
+    return random.choice(variants).replace("{text}", text)
+
+
+def reminder_skip(uid: int, user: dict, rem: dict, date: str) -> bool:
+    """Не напоминать про то, что человек уже сделал сегодня."""
+    kind = rem["kind"]
+    if kind == "water":
+        return db.water_total(uid, date) >= water_target_for(user)
+    if kind == "workout":
+        w = db.workout_for_date(uid, date)
+        return bool(w and w.get("status") == "done")
+    if kind == "supplement":
+        supps = db.list_supplements(uid)
+        if not supps:
+            return False
+        taken = db.taken_supplements(uid, date)
+        want = (rem.get("text") or "").lower()
+        named = [s for s in supps if s["name"].lower() in want or want in s["name"].lower()]
+        return all(s["id"] in taken for s in (named or supps))
+    return False
+
+
+def reminder_quiet(rem: dict, now) -> bool:
+    """Тихие часы — только для интервальных.
+
+    Попросил «в 23:30» — пришлём в 23:30, это его собственная просьба.
+    """
+    if not rem.get("every_min"):
+        return False
+    minute = now.hour * 60 + now.minute
+    return minute >= QUIET_FROM or minute < QUIET_TO
+
+
+async def send_reminder(bot: Bot, uid: int, user: dict, rem: dict, date: str) -> None:
+    if reminder_quiet(rem, datetime.now()) or reminder_skip(uid, user, rem, date):
+        return
+    if rem["kind"] == "evening":
+        await bot.send_message(
+            uid,
+            "🌙 <b>Как прошёл день</b>\n\n"
+            + build_day_overview(uid, date, show_advice(bot.id))
+            + ("\n\nЕсли что-то забыл записать — просто расскажи 🙂"
+               if config.AGENT_MODE else ""),
+            reply_markup=None if config.AGENT_MODE else evening_kb(uid, date),
+        )
+        return
+    text = _reminder_text(rem)
+    await bot.send_message(
+        uid, text,
+        reply_markup=None if (config.AGENT_MODE or rem["kind"] != "workout")
+        else WORKOUT_NUDGE_KB,
+    )
+    # Ответ «выпил» / «принял» агент должен понимать в контексте напоминания.
+    db.add_chat(uid, "assistant", text)
+
+
+def seed_reminders(uid: int, user: dict) -> None:
+    """Старые захардкоженные напоминания живут теперь как обычные записи.
+
+    Заводим один раз на человека: дальше он управляет ими словами, и то, что
+    он попросил выключить, не должно вернуться на следующий день.
+    """
+    if db.get_setting(f"rem_seed:{uid}"):
+        return
+    db.set_setting(f"rem_seed:{uid}", "1")
+    if db.list_reminders(uid, only_enabled=False):
+        return
+    db.add_reminder(uid, "water", "попить воды", every_min=120,
+                    win_from="09:00", win_to="21:00")
+    by_time: dict[str, int] = {}
+    for pl in db.get_workout_plan(uid):
+        by_time[pl["time"]] = by_time.get(pl["time"], 0) | (1 << pl["dow"])
+    for hhmm, mask in by_time.items():
+        db.add_reminder(uid, "workout", "тренировка", time=hhmm, dow_mask=mask)
+    db.add_reminder(uid, "evening", "итоги дня",
+                    time=user.get("evening_time") or "21:00")
+
+
 async def reminder_loop() -> None:
     await asyncio.sleep(5)
     while True:
@@ -1677,7 +1782,6 @@ async def reminder_loop() -> None:
             now = datetime.now()
             hm = now.strftime("%H:%M")
             date = now.strftime("%Y-%m-%d")
-            dow = now.weekday()
             await _oura_daily_fetch(date)
             await _whoop_daily_fetch(date)
             for uid in db.all_user_ids():
@@ -1689,24 +1793,13 @@ async def reminder_loop() -> None:
                 bot = _bot_for_user(user)
                 if bot is None:
                     continue
-                for p in db.get_workout_plan(uid):
-                    if p["dow"] == dow and p["time"] == hm and _fire_once(uid, date, f"wo{p['id']}"):
-                        await bot.send_message(
-                            uid,
-                            "🏋️ Сегодня по плану тренировка.\n"
-                            "Как сделаешь — просто расскажи мне, я запишу 🙂",
-                            reply_markup=None if config.AGENT_MODE else WORKOUT_NUDGE_KB,
-                        )
-                ev = user.get("evening_time") or "21:00"
-                if ev == hm and _fire_once(uid, date, "evening"):
-                    await bot.send_message(
-                        uid,
-                        "🌙 <b>Как прошёл день</b>\n\n"
-                        + build_day_overview(uid, date, show_advice(bot.id))
-                        + ("\n\nЕсли что-то забыл записать — просто расскажи 🙂"
-                           if config.AGENT_MODE else ""),
-                        reply_markup=None if config.AGENT_MODE else evening_kb(uid, date),
-                    )
+                seed_reminders(uid, user)
+                for rem in db.list_reminders(uid):
+                    if not db.reminder_due(rem, now):
+                        continue
+                    if not _fire_once(uid, date, f"rem{rem['id']}:{hm}"):
+                        continue
+                    await send_reminder(bot, uid, user, rem, date)
         except Exception:  # noqa: BLE001
             log.exception("Ошибка в цикле напоминаний")
         await asyncio.sleep(20)
