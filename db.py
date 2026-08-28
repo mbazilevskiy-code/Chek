@@ -156,6 +156,50 @@ CREATE TABLE IF NOT EXISTS oura_workouts (
 );
 CREATE INDEX IF NOT EXISTS idx_oura_wo_user_day ON oura_workouts(user_id, day);
 
+CREATE TABLE IF NOT EXISTS whoop_tokens (
+    user_id      INTEGER PRIMARY KEY,
+    access_token TEXT,
+    refresh_token TEXT,
+    expires_at   REAL
+);
+
+CREATE TABLE IF NOT EXISTS whoop_daily (
+    user_id        INTEGER NOT NULL,
+    date           TEXT NOT NULL,
+    recovery       INTEGER,        -- % восстановления
+    hrv            REAL,           -- мс
+    resting_hr     REAL,
+    spo2           REAL,
+    skin_temp      REAL,
+    sleep_h        REAL,
+    sleep_perf     INTEGER,        -- % эффективности сна
+    deep_h         REAL,
+    rem_h          REAL,
+    light_h        REAL,
+    awake_h        REAL,
+    breath_avg     REAL,
+    strain         REAL,           -- дневной strain 0..21
+    day_kcal       INTEGER,        -- расход за сутки
+    avg_hr         INTEGER,
+    max_hr         INTEGER,
+    extra_json     TEXT,
+    PRIMARY KEY (user_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS whoop_workouts (
+    whoop_id  TEXT PRIMARY KEY,     -- id записи WHOOP: по нему дедуп
+    user_id   INTEGER NOT NULL,
+    day       TEXT NOT NULL,
+    start_dt  TEXT,
+    end_dt    TEXT,
+    sport     TEXT,
+    strain    REAL,
+    calories  INTEGER,
+    distance  REAL,
+    avg_hr    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_whoop_wo_user_day ON whoop_workouts(user_id, day);
+
 CREATE TABLE IF NOT EXISTS chat_history (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -874,6 +918,127 @@ def oura_latest(user_id: int) -> dict | None:
             (user_id,),
         ).fetchone()
         return dict(row) if row else None
+
+
+# ---------- WHOOP ----------
+
+_WHOOP_COLS = ["recovery", "hrv", "resting_hr", "spo2", "skin_temp", "sleep_h",
+               "sleep_perf", "deep_h", "rem_h", "light_h", "awake_h", "breath_avg",
+               "strain", "day_kcal", "avg_hr", "max_hr", "extra_json"]
+
+
+def save_whoop_tokens(user_id: int, access: str, refresh: str, expires_at: float) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO whoop_tokens(user_id, access_token, refresh_token, expires_at) "
+            "VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "access_token=excluded.access_token, refresh_token=excluded.refresh_token, "
+            "expires_at=excluded.expires_at",
+            (user_id, access, refresh, expires_at),
+        )
+
+
+def get_whoop_tokens(user_id: int) -> dict | None:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM whoop_tokens WHERE user_id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def delete_whoop_tokens(user_id: int) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM whoop_tokens WHERE user_id = ?", (user_id,))
+
+
+def whoop_connected(user_id: int) -> bool:
+    return get_whoop_tokens(user_id) is not None
+
+
+def whoop_users() -> list[int]:
+    with _conn() as c:
+        return [r["user_id"] for r in c.execute("SELECT user_id FROM whoop_tokens").fetchall()]
+
+
+def upsert_whoop_daily(user_id: int, date: str, **fields) -> None:
+    fields = {k: v for k, v in fields.items() if k in _WHOOP_COLS and v is not None}
+    with _conn() as c:
+        c.execute("INSERT OR IGNORE INTO whoop_daily(user_id, date) VALUES(?, ?)", (user_id, date))
+        if fields:
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            c.execute(f"UPDATE whoop_daily SET {sets} WHERE user_id = ? AND date = ?",
+                      (*fields.values(), user_id, date))
+
+
+def whoop_range(user_id: int, dates: list[str]) -> dict[str, dict]:
+    if not dates:
+        return {}
+    marks = ",".join("?" for _ in dates)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT * FROM whoop_daily WHERE user_id = ? AND date IN ({marks})",
+            (user_id, *dates),
+        ).fetchall()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        d.pop("user_id", None)
+        out[r["date"]] = d
+    return out
+
+
+def whoop_latest(user_id: int) -> dict | None:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM whoop_daily WHERE user_id = ? ORDER BY date DESC LIMIT 1",
+                        (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_whoop_workout(user_id: int, rec: dict) -> None:
+    """Тренировка с браслета. Дедуп по id записи WHOOP."""
+    if not rec.get("whoop_id") or not rec.get("day"):
+        return
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO whoop_workouts(whoop_id, user_id, day, start_dt, end_dt, sport, "
+            "strain, calories, distance, avg_hr) VALUES(?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(whoop_id) DO UPDATE SET day=excluded.day, start_dt=excluded.start_dt, "
+            "end_dt=excluded.end_dt, sport=excluded.sport, strain=excluded.strain, "
+            "calories=excluded.calories, distance=excluded.distance, avg_hr=excluded.avg_hr",
+            (str(rec["whoop_id"]), user_id, rec["day"], rec.get("start"), rec.get("end"),
+             rec.get("sport"), rec.get("strain"), rec.get("calories"),
+             rec.get("distance"), rec.get("avg_hr")),
+        )
+
+
+def _whoop_workout_rows(rows) -> list[dict]:
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["start"] = d.pop("start_dt", None)
+        d["end"] = d.pop("end_dt", None)
+        d.pop("user_id", None)
+        out.append(d)
+    return out
+
+
+def whoop_workouts_for_date(user_id: int, day: str) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM whoop_workouts WHERE user_id = ? AND day = ? "
+            "ORDER BY COALESCE(calories, 0) DESC, start_dt", (user_id, day),
+        ).fetchall()
+    return _whoop_workout_rows(rows)
+
+
+def whoop_workouts_range(user_id: int, dates: list[str]) -> list[dict]:
+    if not dates:
+        return []
+    marks = ",".join("?" for _ in dates)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT * FROM whoop_workouts WHERE user_id = ? AND day IN ({marks}) "
+            f"ORDER BY day DESC, start_dt DESC", (user_id, *dates),
+        ).fetchall()
+    return _whoop_workout_rows(rows)
 
 
 # ---------- вода ----------

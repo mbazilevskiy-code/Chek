@@ -102,7 +102,7 @@ def build_summary(days: int = 7, uid: int | None = None) -> dict:
 @web.middleware
 async def _auth_middleware(request: web.Request, handler):
     """Владелец — по DASHBOARD_TOKEN; кабинет тренера (/coach*) — по ключу кабинета."""
-    if request.path.startswith("/oura/"):
+    if request.path.startswith("/oura/") or request.path.startswith("/whoop/"):
         return await handler(request)  # OAuth-callback защищён параметром state
     if request.path == "/privacy":
         return await handler(request)  # публичная страница, ключ не нужен
@@ -280,6 +280,10 @@ def _bucket_weekly(series: list[dict], keys) -> list[dict]:
 
 _SERIES_KEYS = ("kcal", "protein", "fat", "carbs", "chek", "meals", "water")
 # Числовые метрики кольца: по ним считаем средние и схлопываем ряды.
+_WHOOP_KEYS = ("recovery", "hrv", "resting_hr", "spo2", "skin_temp", "sleep_h",
+               "sleep_perf", "deep_h", "rem_h", "light_h", "awake_h", "breath_avg",
+               "strain", "day_kcal", "avg_hr", "max_hr")
+
 _OURA_KEYS = ("readiness", "sleep_score", "sleep_h", "hrv", "resting_hr",
               "temp_dev", "activity_score", "steps",
               "sleep_efficiency", "breath_avg", "deep_h", "rem_h", "light_h",
@@ -443,6 +447,18 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
             "kcal_burned": sum(w["kcal_burned"] or 0 for w in wlog if w["status"] == "done"),
         }
 
+    # WHOOP: тот же принцип, что и Oura — средние за окно плюс тренировки
+    whoop = None
+    wd = db.whoop_range(uid, dates)
+    if wd:
+        whoop = {
+            "series": [{"date": d, **(wd.get(d) or {})} for d in reversed(dates)],
+            "latest": wd.get(max(wd)),
+            "avg": {k: _avg([v.get(k) for v in wd.values()]) for k in _WHOOP_KEYS},
+            "workouts": db.whoop_workouts_range(uid, dates),
+            "connected": True,
+        }
+
     # Последняя запись — по дневному ряду, до схлопывания в недели.
     logged = [x for x in s["series"] if x["meals"] or x["water"] or x["wi"] or x["workout"]]
 
@@ -451,11 +467,13 @@ def client_detail(uid: int, days: int = 7, labs_days: int | None = None) -> dict
         s["series"] = _bucket_weekly(s["series"], _SERIES_KEYS)
         if oura:
             oura["series"] = _bucket_weekly(oura["series"], _OURA_KEYS)
+        if whoop:
+            whoop["series"] = _bucket_weekly(whoop["series"], _WHOOP_KEYS)
 
     s.update({
         "sex": user.get("sex"), "age": user.get("age"), "goal": user.get("goal"),
         "wellbeing": wellbeing, "supplements": supplements, "labs": labs, "oura": oura,
-        "food": food, "workouts": workouts,
+        "whoop": whoop, "food": food, "workouts": workouts,
         "trainer_notes": db.trainer_notes_range(uid, dates), "bucket": bucket,
         "last_activity": logged[-1]["date"] if logged else None,
         "last_activity_label": logged[-1]["label"] if logged else None,
@@ -528,6 +546,15 @@ def week_data_text(uid: int) -> str:
         names = ", ".join(f"{x['name']}" + (f" ({x['timing']})" if x['timing'] else "")
                           for x in sup["list"])
         lines.append(f"БАДы: {names}. Сегодня принято {sup['taken']}/{sup['total']}.")
+    wh = detail.get("whoop")
+    if wh and wh.get("avg"):
+        a = wh["avg"]
+        bits = [f"{label} {a[key]}" for key, label in
+                (("recovery", "восстановление"), ("strain", "нагрузка (strain)"),
+                 ("sleep_h", "сон, ч"), ("hrv", "HRV"), ("resting_hr", "пульс покоя"))
+                if a.get(key) is not None]
+        if bits:
+            lines.append("WHOOP за неделю (в среднем): " + ", ".join(bits) + ".")
     notes = detail.get("trainer_notes") or []
     if notes:
         lines.append("Ассистент подсветил: "
@@ -662,6 +689,33 @@ async def _oura_callback(request: web.Request) -> web.Response:
                       "теперь сон и готовность будут в сводках и брифах.")
 
 
+async def _whoop_callback(request: web.Request) -> web.Response:
+    import whoop
+
+    code = request.query.get("code")
+    state = request.query.get("state") or ""
+    if request.query.get("error"):
+        return _oura_page("Подключение отменено",
+                          "Доступ к браслету не выдан. Скажи ассистенту, если захочешь "
+                          "попробовать снова.")
+    uid_s = db.get_setting(f"whoopstate:{state}") if state else None
+    if not code or not uid_s:
+        return _oura_page("Ссылка устарела",
+                          "Попроси у ассистента свежую ссылку и перейди по ней.")
+    uid = int(uid_s)
+    try:
+        await whoop.complete_auth(uid, code)
+        n = await whoop.fetch_and_store(uid)
+    except Exception as e:  # noqa: BLE001
+        import html as _html
+        return _oura_page("Не получилось",
+                          "Ошибка при подключении WHOOP: " + _html.escape(str(e)[:160]))
+    db.set_setting(f"whoopstate:{state}", "")
+    return _oura_page("Браслет подключён! ✅",
+                      f"Загрузил данные за последние дни ({n} дн.). Возвращайся в Telegram — "
+                      "теперь восстановление, сон и нагрузка будут в сводках.")
+
+
 async def start_dashboard(port: int, host: str | None = None) -> web.AppRunner:
     if host is None:
         # С ключом — доступ отовсюду (сервер), без ключа — только этот компьютер.
@@ -679,6 +733,7 @@ async def start_dashboard(port: int, host: str | None = None) -> web.AppRunner:
     app.router.add_get("/coach/api/client", _coach_api_client)
     app.router.add_post("/coach/api/brief", _coach_api_brief)
     app.router.add_get("/oura/callback", _oura_callback)
+    app.router.add_get("/whoop/callback", _whoop_callback)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host, port)

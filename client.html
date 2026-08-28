@@ -67,6 +67,11 @@ h1{font-size:1.2rem;margin:0}
   justify-content:center;font-size:.7rem;color:#fff}
 .box.on{background:var(--ok)}.box.off{background:transparent;border:1.5px solid var(--baseline)}
 .row .tm{margin-left:auto;color:var(--muted);font-size:.78rem}
+.supp{display:flex;flex-direction:column;gap:7px}
+.supp-row{display:flex;align-items:center;gap:9px;font-size:.88rem}
+.supp-row .box{width:17px;height:17px;border-radius:5px;flex:none;display:flex;
+  align-items:center;justify-content:center;font-size:.7rem;color:#fff}
+.supp-row .tm{margin-left:auto;color:var(--muted);font-size:.78rem}
 .lab table{width:100%;border-collapse:collapse;font-size:.86rem}
 .lab th{text-align:left;color:var(--muted);font-weight:600;font-size:.7rem;text-transform:uppercase;padding:6px;border-bottom:1px solid var(--line)}
 .lab td{padding:7px 6px;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
@@ -245,6 +250,37 @@ function render(s,p){
       }).join("")+`</tbody></table></div>`;
   }else labs=`<div class="nodata">Данных нет — анализы не загружены</div>`;
 
+  // браслет WHOOP: показываем рядом с кольцом, если подключён
+  let whoopHtml="",whoopCard="";
+  if(s.whoop){
+    const a=s.whoop.avg||{},L=s.whoop.latest||{};
+    const val=(v,u,d)=>v==null?null:`${d?rub(v):fmt(Math.round(v))}${u||""}`;
+    const group=(title,rows)=>{const got=rows.filter(r=>r[1]!=null);
+      return `<div><div class="k">${title}</div>${got.length?got.map(r=>`<div class="orow"><span>${r[0]}</span><b>${r[1]}</b></div>`).join("")
+        :`<div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div>`}</div>`;};
+    whoopHtml=`<div class="ogrid">
+      ${group("💚 Восстановление",[["Recovery",val(a.recovery,"%")],["HRV",val(a.hrv," мс",1)],
+        ["Пульс покоя",val(a.resting_hr," уд/мин",1)],["SpO₂",val(a.spo2,"%",1)],
+        ["Температура кожи",a.skin_temp==null?null:`${rub(a.skin_temp)} °C`]])}
+      ${group("😴 Сон",[["Длительность",val(a.sleep_h," ч",1)],["Качество",val(a.sleep_perf,"%")],
+        ["Глубокий",val(a.deep_h," ч",1)],["REM",val(a.rem_h," ч",1)],
+        ["Дыхание",val(a.breath_avg,"/мин",1)]])}
+      ${group("🔥 Нагрузка",[["Strain",val(a.strain,"",1)],["Расход за сутки",val(a.day_kcal," ккал")],
+        ["Пульс средний",val(a.avg_hr," уд/мин")],["Пульс макс.",val(a.max_hr," уд/мин")]])}
+    </div>`;
+    const ww=s.whoop.workouts||[];
+    whoopHtml+=ww.length?`<div class="k" style="margin-top:12px">🏃 Тренировки с браслета</div>
+      <div class="supp">${ww.map(w=>{
+        const day=new Date(w.day+"T00:00:00").toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"});
+        return `<div class="supp-row"><span class="box on">✓</span>
+          <span>${day} · ${esc(w.sport||"тренировка")}${w.calories?` · ${fmt(w.calories)} ккал`:""}${w.strain?` · strain ${rub(w.strain)}`:""}</span></div>`;
+      }).join("")}</div>`
+      :`<div class="k" style="margin-top:12px">🏃 Тренировки с браслета</div>
+        <div class="nodata" style="padding:8px;margin-top:5px">Данных нет</div>`;
+    whoopCard=`<div class="card"><h3>⌚ Браслет WHOOP <span class="src">ср. ${cap}</span></h3>
+      <p class="cap">Восстановление, сон и нагрузка ${cap}</p>${whoopHtml}</div>`;
+  }
+
   // кольцо
   let oura;
   if(s.oura){const a=s.oura.avg||{},L=s.oura.latest||{};
@@ -277,6 +313,7 @@ function render(s,p){
       <div class="card"><h3>💊 БАДы</h3><p class="cap">Выполнение плана ${cap}</p>${supp}</div>
     </div>
     <div class="card"><h3>🩸 Анализы</h3><p class="cap">Показатели и норма</p>${labs}</div>
+    ${whoopCard}
     <div class="card"><h3>💍 Кольцо Oura</h3><p class="cap">Сон, активность и показатели ${cap}</p>${oura}</div>
     <div class="brief">
       <div><b>🧠 Разбор недели</b></div>

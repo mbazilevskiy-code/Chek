@@ -16,6 +16,7 @@ import config
 import db
 import nutrition
 import oura as oura_mod
+import whoop as whoop_mod
 import web_dashboard
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,9 @@ PERSONA = """Ты — ассистент тренера {coach}. Работае�
 Не вываливай список вопросов и не настаивай: не ответил — спокойно спроси в другой раз. \
 Каждое названное значение сохраняй через update_profile. Когда данных хватит, нормы \
 посчитаются сами — скажи об этом по-человечески, без таблиц.
+
+ГАДЖЕТЫ
+Если к слову зайдёт разговор про носимые устройства — спроси, есть ли у человека кольцо Oura или браслет WHOOP, и предложи подключить: инструменты get_oura_link и get_whoop_link дадут ссылку. Если подключение недоступно, скажи об этом честно и не обещай.
 
 ЖИВАЯ РЕЧЬ
 Не повторяй одну и ту же фразу-шаблон. Подтверждай по-разному и коротко: «ага, записал», \
@@ -151,6 +155,13 @@ def context_block(uid: int) -> str:
         lines.append("Вес: " + ", ".join(f"{w['kg']:g} ({w['date']})" for w in weights))
 
     lines.append("Кольцо Oura: " + ("подключено" if db.oura_connected(uid) else "не подключено"))
+    lines.append("Браслет WHOOP: " + ("подключён" if db.whoop_connected(uid) else "не подключён"))
+    wh = db.whoop_latest(uid)
+    if wh:
+        bits = [f"{k} {wh[k]}" for k in ("recovery", "strain", "sleep_h", "hrv")
+                if wh.get(k) is not None]
+        if bits:
+            lines.append("WHOOP, последние данные: " + ", ".join(bits))
     return "\n".join(lines)
 
 
@@ -170,6 +181,10 @@ async def workout_kcal(uid: int, date: str, hhmm: str, minutes: int) -> tuple[in
                     return int(round(float(hit["calories"]))), "oura"
             except Exception:  # noqa: BLE001
                 log.warning("Oura: тренировки за день не получены", exc_info=True)
+    if db.whoop_connected(uid):
+        stored = whoop_mod.match_workout(db.whoop_workouts_for_date(uid, date), hhmm, minutes)
+        if stored and stored.get("calories"):
+            return int(round(float(stored["calories"]))), "whoop"
     user = db.get_user(uid) or {}
     return nutrition.workout_kcal_estimate(user.get("weight_kg"), minutes), "estimate"
 
@@ -263,6 +278,10 @@ TOOLS = [
      "description": ("Ссылка на личную страничку клиента с его прогрессом: графики, "
                      "самочувствие, анализы, разбор недели. Давай, когда человек хочет "
                      "посмотреть свои цифры, прогресс или графики."),
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_whoop_link",
+     "description": ("Ссылка для подключения браслета WHOOP. Давай, когда человек говорит, "
+                     "что у него WHOOP, или просит подключить браслет."),
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "flag_for_trainer",
      "description": ("Подсветить тренеру вопрос, жалобу или тревогу клиента. Вызывай, когда "
@@ -587,7 +606,16 @@ async def _tool_get_my_dashboard_link(uid: int, args: dict) -> dict:
     return {"ok": True, "url": config.public_url(f"/me?key={token}")}
 
 
+async def _tool_get_whoop_link(uid: int, args: dict) -> dict:
+    if not config.WHOOP_ENABLED:
+        return {"ok": False, "error": "подключение WHOOP временно недоступно"}
+    state = secrets.token_urlsafe(16)
+    db.set_setting(f"whoopstate:{state}", str(uid))
+    return {"ok": True, "url": whoop_mod.authorize_url(state)}
+
+
 TOOL_IMPL = {
+    "get_whoop_link": _tool_get_whoop_link,
     "get_my_dashboard_link": _tool_get_my_dashboard_link,
     "get_schedule": _tool_get_schedule,
     "get_supplements_today": _tool_get_supplements_today,
@@ -673,7 +701,8 @@ async def handle_message(uid: int, coach: dict | None, user_text: str,
             except Exception as e:  # noqa: BLE001
                 log.exception("Инструмент %s упал", call.name)
                 result = {"ok": False, "error": str(e)[:200]}
-            if call.name == "get_my_dashboard_link" and result.get("url"):
+            if call.name in ("get_my_dashboard_link", "get_oura_link",
+                             "get_whoop_link") and result.get("url"):
                 link = result["url"]
             results.append({"type": "tool_result", "tool_use_id": call.id,
                             "content": json.dumps(result, ensure_ascii=False)})

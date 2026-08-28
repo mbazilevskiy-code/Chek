@@ -41,6 +41,7 @@ import config
 import db
 import nutrition
 import oura as oura_mod
+import whoop as whoop_mod
 import stt
 import web_dashboard
 from analyzer import DemoModeError, OpenRouterError
@@ -1657,6 +1658,18 @@ async def _oura_daily_fetch(date: str) -> None:
                 log.exception("Oura daily fetch")
 
 
+async def _whoop_daily_fetch(date: str) -> None:
+    if not config.WHOOP_ENABLED or datetime.now().hour < 7:
+        return
+    for uid in db.whoop_users():
+        if _fire_once(uid, date, "whoop_fetch"):
+            try:
+                await whoop_mod.fetch_and_store(uid)
+                log.info("WHOOP обновлён для %s", uid)
+            except Exception:  # noqa: BLE001
+                log.exception("WHOOP daily fetch")
+
+
 async def reminder_loop() -> None:
     await asyncio.sleep(5)
     while True:
@@ -1666,6 +1679,7 @@ async def reminder_loop() -> None:
             date = now.strftime("%Y-%m-%d")
             dow = now.weekday()
             await _oura_daily_fetch(date)
+            await _whoop_daily_fetch(date)
             for uid in db.all_user_ids():
                 user = db.get_user(uid)
                 if not user or not user.get("reminders_on", 1):

@@ -98,6 +98,12 @@ OURA_CLIENT_SECRET = _clean(os.getenv("OURA_CLIENT_SECRET", ""))
 OURA_REDIRECT_URI = _clean(os.getenv("OURA_REDIRECT_URI", ""))
 OURA_ENABLED = bool(OURA_CLIENT_ID and OURA_CLIENT_SECRET and OURA_REDIRECT_URI)
 
+# --- WHOOP (браслет) ---
+WHOOP_CLIENT_ID = _clean(os.getenv("WHOOP_CLIENT_ID", ""))
+WHOOP_CLIENT_SECRET = _clean(os.getenv("WHOOP_CLIENT_SECRET", ""))
+WHOOP_REDIRECT_URI = _clean(os.getenv("WHOOP_REDIRECT_URI", ""))
+WHOOP_ENABLED = bool(WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET and WHOOP_REDIRECT_URI)
+
 # Ключ доступа к дашборду. Пусто — дашборд виден только с этого компьютера
 # (localhost). Задан (на сервере генерируется при деплое) — дашборд доступен
 # извне по ссылке http://<сервер>:8127/?key=КЛЮЧ

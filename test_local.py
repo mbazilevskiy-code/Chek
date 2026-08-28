@@ -2330,6 +2330,203 @@ async def _me_http_status(path: str):
         await runner.cleanup()
 
 
+WHOOP_UID = 7050
+
+
+def test_whoop_auth():
+    import whoop
+
+    saved = (config.WHOOP_CLIENT_ID, config.WHOOP_CLIENT_SECRET,
+             config.WHOOP_REDIRECT_URI, config.WHOOP_ENABLED)
+    try:
+        config.WHOOP_CLIENT_ID = "test-client"
+        config.WHOOP_REDIRECT_URI = "https://example.com/whoop/callback"
+        url = whoop.authorize_url("st4te")
+        ok(url.startswith("https://api.prod.whoop.com/oauth/oauth2/auth?"),
+           "адрес авторизации из документации v2")
+        for part in ("client_id=test-client", "state=st4te", "response_type=code",
+                     "offline", "read%3Arecovery", "whoop%2Fcallback"):
+            ok(part in url, f"в ссылке есть {part}")
+        ok("api.prod.whoop.com/developer/v2" in whoop.API, "API v2, не v1")
+    finally:
+        (config.WHOOP_CLIENT_ID, config.WHOOP_CLIENT_SECRET,
+         config.WHOOP_REDIRECT_URI, config.WHOOP_ENABLED) = saved
+
+    eq(whoop._kcal(4184), 1000, "килоджоули переводятся в килокалории")
+    eq(whoop._hours(3_600_000), 1.0, "миллисекунды переводятся в часы")
+    eq(whoop._day("2026-08-28T06:12:00.000Z"), "2026-08-28", "дата из ISO-времени")
+    eq(whoop._day("мусор"), None, "мусорное время не ломает разбор")
+
+
+async def _whoop_token_flow():
+    import whoop
+
+    posted = []
+
+    async def fake_post(data):
+        posted.append(data)
+        return {"access_token": f"acc-{len(posted)}", "refresh_token": "ref-1",
+                "expires_in": 3600}
+
+    saved = whoop._post_token
+    whoop._post_token = fake_post
+    try:
+        await whoop.complete_auth(WHOOP_UID, "the-code")
+        first = db.get_whoop_tokens(WHOOP_UID)
+        # Протухший токен обновляется по refresh
+        db.save_whoop_tokens(WHOOP_UID, first["access_token"], "ref-1", 1.0)
+        token = await whoop._valid_token(WHOOP_UID)
+        return posted, first, token
+    finally:
+        whoop._post_token = saved
+
+
+def test_whoop_tokens():
+    db.ensure_user(WHOOP_UID, "Клиент с браслетом")
+    posted, first, token = asyncio.run(_whoop_token_flow())
+    eq(posted[0]["grant_type"], "authorization_code", "код меняется на токен")
+    eq(posted[0]["code"], "the-code", "передан полученный код")
+    eq(first["access_token"], "acc-1", "токен сохранён")
+    eq(first["refresh_token"], "ref-1", "refresh сохранён — нужен для offline")
+    eq(posted[1]["grant_type"], "refresh_token", "протухший токен обновляется")
+    eq(token, "acc-2", "используется свежий токен")
+    eq(db.whoop_connected(WHOOP_UID), True, "браслет числится подключённым")
+    ok(WHOOP_UID in db.whoop_users(), "попал в список для ежедневного забора")
+
+
+def _whoop_payloads(day: str) -> dict:
+    ts = f"{day}T18:20:00.000Z"
+    return {
+        "recovery": {"records": [{"created_at": f"{day}T06:00:00.000Z", "score": {
+            "recovery_score": 68, "hrv_rmssd_milli": 54.3, "resting_heart_rate": 52,
+            "spo2_percentage": 96.5, "skin_temp_celsius": 33.4}}]},
+        "activity/sleep": {"records": [{"start": f"{day}T23:10:00.000Z", "score": {
+            "stage_summary": {"total_slow_wave_sleep_time_milli": 5_400_000,
+                              "total_rem_sleep_time_milli": 6_300_000,
+                              "total_light_sleep_time_milli": 14_400_000,
+                              "total_awake_time_milli": 1_800_000},
+            "sleep_performance_percentage": 88, "respiratory_rate": 14.6}}]},
+        "cycle": {"records": [{"start": f"{day}T04:00:00.000Z", "score": {
+            "strain": 12.7, "kilojoule": 10460, "average_heart_rate": 68,
+            "max_heart_rate": 171}}]},
+        "activity/workout": {"records": [
+            {"id": "w-abc", "start": ts, "end": f"{day}T19:05:00.000Z",
+             "sport_name": "Weightlifting",
+             "score": {"strain": 9.4, "kilojoule": 1674, "average_heart_rate": 128,
+                       "distance_meter": 0}}]},
+        "user/measurement/body": {"height_meter": 1.8, "weight_kilogram": 82.0,
+                                  "max_heart_rate": 190},
+    }
+
+
+async def _run_whoop_fetch(uid: int, payloads: dict) -> int:
+    import whoop
+
+    async def fake_get(session, token, path, params):
+        data = payloads.get(path)
+        if data is None:
+            return []
+        return data.get("records", [data]) if isinstance(data, dict) else data
+
+    async def fake_token(_uid):
+        return "tok"
+
+    saved = (whoop._get, whoop._valid_token)
+    whoop._get, whoop._valid_token = fake_get, fake_token
+    try:
+        return await whoop.fetch_and_store(uid, days=2)
+    finally:
+        whoop._get, whoop._valid_token = saved
+
+
+def test_whoop_fetch():
+    got = asyncio.run(_run_whoop_fetch(WHOOP_UID, _whoop_payloads(TODAY)))
+    ok(got >= 1, "день с данными сохранён")
+
+    row = db.whoop_range(WHOOP_UID, [TODAY])[TODAY]
+    eq(row["recovery"], 68, "восстановление")
+    eq(row["hrv"], 54.3, "HRV")
+    eq(row["resting_hr"], 52.0, "пульс покоя")
+    eq(row["spo2"], 96.5, "SpO2")
+    eq(row["skin_temp"], 33.4, "температура кожи")
+    eq(row["deep_h"], 1.5, "глубокий сон из миллисекунд")
+    eq(row["rem_h"], 1.8, "REM")
+    eq(row["light_h"], 4.0, "лёгкий сон")
+    eq(row["sleep_h"], 7.3, "сон = сумма фаз без бодрствования")
+    eq(row["sleep_perf"], 88, "качество сна")
+    eq(row["breath_avg"], 14.6, "частота дыхания")
+    eq(row["strain"], 12.7, "дневной strain")
+    eq(row["day_kcal"], 2500, "расход за сутки из килоджоулей")
+    eq(row["max_hr"], 171, "максимальный пульс")
+    ok("body" in (row["extra_json"] or ""), "телосложение легло в extra_json")
+
+    wos = db.whoop_workouts_for_date(WHOOP_UID, TODAY)
+    eq(len(wos), 1, "тренировка сохранена")
+    eq(wos[0]["sport"], "Weightlifting", "вид спорта")
+    eq(wos[0]["calories"], 400, "ккал тренировки из килоджоулей")
+    eq(wos[0]["strain"], 9.4, "strain тренировки")
+
+    asyncio.run(_run_whoop_fetch(WHOOP_UID, _whoop_payloads(TODAY)))
+    eq(len(db.whoop_workouts_for_date(WHOOP_UID, TODAY)), 1,
+       "повторный забор не плодит копии (дедуп по id)")
+
+    empty = asyncio.run(_run_whoop_fetch(7051, {}))
+    eq(empty, 0, "пустой ответ не роняет забор")
+
+
+def test_whoop_workout_matching():
+    import whoop
+    import agent as agent_mod
+
+    rows = db.whoop_workouts_for_date(WHOOP_UID, TODAY)
+    hit = whoop.match_workout(rows, "18:30", 40)
+    ok(hit is not None, "тренировка браслета совпала по времени")
+    eq(hit["calories"], 400, "берём её расход")
+    eq(whoop.match_workout(rows, "07:00", 30), None, "без пересечения совпадения нет")
+    eq(whoop.workout_time(rows[0]), "18:20", "время начала")
+    eq(whoop.workout_duration_min(rows[0]), 45, "длительность из интервала")
+
+    kcal, source = asyncio.run(agent_mod.workout_kcal(WHOOP_UID, TODAY, "18:30", 40))
+    eq(source, "whoop", "источник расхода — браслет")
+    eq(kcal, 400, "число взято из WHOOP")
+
+
+def test_whoop_agent_and_cabinet():
+    import agent as agent_mod
+
+    saved = config.WHOOP_ENABLED
+    try:
+        config.WHOOP_ENABLED = False
+        res = asyncio.run(agent_mod._tool_get_whoop_link(WHOOP_UID, {}))
+        eq(res["ok"], False, "при выключенной интеграции ссылки нет")
+        ok("недоступно" in res["error"], "ассистенту есть что честно сказать")
+
+        config.WHOOP_ENABLED = True
+        config.WHOOP_CLIENT_ID = "cid"
+        config.WHOOP_REDIRECT_URI = "https://example.com/whoop/callback"
+        res = asyncio.run(agent_mod._tool_get_whoop_link(WHOOP_UID, {}))
+        eq(res["ok"], True, "ссылка выдана")
+        ok("api.prod.whoop.com" in res["url"], "ведёт на авторизацию WHOOP")
+    finally:
+        config.WHOOP_ENABLED = saved
+
+    ok(any(t["name"] == "get_whoop_link" for t in agent_mod.TOOLS),
+       "инструмент подключения браслета объявлен")
+    ok("WHOOP" in agent_mod.PERSONA, "персона знает про оба гаджета")
+
+    d = web_dashboard.client_detail(WHOOP_UID, days=7)
+    w = d["whoop"]
+    ok(w is not None, "блок WHOOP в карточке")
+    eq(w["avg"]["recovery"], 68, "среднее восстановление за окно")
+    eq(w["avg"]["strain"], 12.7, "средний strain")
+    eq(len(w["workouts"]), 1, "тренировки браслета доехали")
+    ok(d.get("oura") is None, "у этого клиента кольца нет — блок пустой")
+
+    txt = web_dashboard.week_data_text(WHOOP_UID)
+    ok("WHOOP за неделю" in txt, "данные браслета попали в бриф тренеру")
+    ok("восстановление" in txt, "и названы человеческими словами")
+
+
 def test_client_cabinet_token():
     uid = 7040
     db.ensure_user(uid, "Кабинет")
@@ -2652,6 +2849,16 @@ def main() -> int:
     test_agent_read_tools()
     print("- v2: командного стиля не осталось")
     test_agent_no_command_style()
+    print("- WHOOP: ссылка авторизации")
+    test_whoop_auth()
+    print("- WHOOP: обмен и обновление токена")
+    test_whoop_tokens()
+    print("- WHOOP: забор данных v2")
+    test_whoop_fetch()
+    print("- WHOOP: матчинг тренировки и расход")
+    test_whoop_workout_matching()
+    print("- WHOOP: ассистент и кабинет")
+    test_whoop_agent_and_cabinet()
     print("- страница политики конфиденциальности")
     test_privacy_page()
     print("- кабинет клиента: ключи доступа")
